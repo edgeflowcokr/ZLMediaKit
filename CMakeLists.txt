@@ -60,7 +60,7 @@ option(ENABLE_SCTP "Enable SCTP" ON)
 option(ENABLE_WEBRTC "Enable WebRTC" ON)
 option(ENABLE_X264 "Enable x264" OFF)
 option(ENABLE_VIDEOSTACK "Enable video stack" OFF)
-option(DISABLE_REPORT "Disable report to report.zlmediakit.com" OFF)
+option(DISABLE_REPORT "Disable report to report.zlmediakit.com" ON)
 option(USE_SOLUTION_FOLDERS "Enable solution dir supported" ON)
 option(ENABLE_OBJCOPY "Enable use objcopy to generate debug info file" ON)
 # 编译静态库
