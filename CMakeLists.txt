@@ -261,7 +261,7 @@ if(ENABLE_FFMPEG)
   # 查找 ffmpeg/libavutil 是否安装
   # find ffmpeg/libavutil installed
   if(PKG_CONFIG_FOUND)
-    pkg_check_modules(AVUTIL QUIET IMPORTED_TARGET libavutil)
+    pkg_check_modules(AVUTIL QUIET IMPORTED_TARGET GLOBAL libavutil)
     if(AVUTIL_FOUND)
       update_cached_list(MK_LINK_LIBRARIES PkgConfig::AVUTIL)
       message(STATUS "found library: ${AVUTIL_LIBRARIES}")
@@ -271,7 +271,7 @@ if(ENABLE_FFMPEG)
   # 查找 ffmpeg/libavcodec 是否安装
   # find ffmpeg/libavcodec installed
   if(PKG_CONFIG_FOUND)
-    pkg_check_modules(AVCODEC QUIET IMPORTED_TARGET libavcodec)
+    pkg_check_modules(AVCODEC QUIET IMPORTED_TARGET GLOBAL libavcodec)
     if(AVCODEC_FOUND)
       update_cached_list(MK_LINK_LIBRARIES PkgConfig::AVCODEC)
       message(STATUS "found library: ${AVCODEC_LIBRARIES}")
@@ -281,7 +281,7 @@ if(ENABLE_FFMPEG)
   # 查找 ffmpeg/libswscale 是否安装
   # find ffmpeg/libswscale installed
   if(PKG_CONFIG_FOUND)
-    pkg_check_modules(SWSCALE QUIET IMPORTED_TARGET libswscale)
+    pkg_check_modules(SWSCALE QUIET IMPORTED_TARGET GLOBAL libswscale)
     if(SWSCALE_FOUND)
       update_cached_list(MK_LINK_LIBRARIES PkgConfig::SWSCALE)
       message(STATUS "found library: ${SWSCALE_LIBRARIES}")
@@ -291,7 +291,7 @@ if(ENABLE_FFMPEG)
   # 查找 ffmpeg/libswresample 是否安装
   # find ffmpeg/libswresample installed
   if(PKG_CONFIG_FOUND)
-    pkg_check_modules(SWRESAMPLE QUIET IMPORTED_TARGET libswresample)
+    pkg_check_modules(SWRESAMPLE QUIET IMPORTED_TARGET GLOBAL libswresample)
     if(SWRESAMPLE_FOUND)
       update_cached_list(MK_LINK_LIBRARIES PkgConfig::SWRESAMPLE)
       message(STATUS "found library: ${SWRESAMPLE_LIBRARIES}")
@@ -301,7 +301,7 @@ if(ENABLE_FFMPEG)
   # 查找 ffmpeg/libavfilter 是否安装
   # find ffmpeg/libavfilter installed
   if(PKG_CONFIG_FOUND)
-    pkg_check_modules(AVFILTER QUIET IMPORTED_TARGET libavfilter)
+    pkg_check_modules(AVFILTER QUIET IMPORTED_TARGET GLOBAL libavfilter)
     if(AVFILTER_FOUND)
       update_cached_list(MK_LINK_LIBRARIES PkgConfig::AVFILTER)
       message(STATUS "found library: ${AVFILTER_LIBRARIES}")
