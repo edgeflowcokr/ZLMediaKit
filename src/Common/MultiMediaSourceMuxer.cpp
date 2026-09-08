@@ -12,6 +12,7 @@
 #include "Common/config.h"
 #include "MultiMediaSourceMuxer.h"
 #include "Thread/WorkThreadPool.h"
+#include "Util/File.h"
 
 using namespace std;
 using namespace toolkit;
@@ -31,6 +32,34 @@ public:
     }
     int readerCount() override { return 0; }
 };
+
+#if defined(ENABLE_MP4)
+// 이벤트 클립(startRecord back/forward)이 닫힌(closeMP4) 직후, 연속녹화(MP4Recorder)와 동일한
+// kBroadcastRecordMP4 훅을 emit 한다. 연속녹화 경로는 MP4Recorder::asyncClose 에서 이미 emit 하지만
+// startRecord(이벤트 클립) 경로는 지금까지 아무 훅도 쏘지 않아 노드가 클립 완료를 알 수 없던 갭을 메운다.
+// 노드는 file_path 로 연속녹화와 이벤트 클립을 구분한다(클립 경로 = startRecord 호출 시 넘긴 path).
+// 주의: time_len 은 반드시 muxer->closeMP4() 호출 전에 muxer->getDuration() 으로 구해 넘겨야 한다
+//       (closeMP4 가 _tracks 를 비워 이후 getDuration()==0). file_size 는 close 후 파일이 확정된 뒤 읽는다.
+//       이 순서는 MP4Recorder::asyncClose 와 동일하다.
+static void emitEventClipRecorded(const std::string &path, const MediaTuple &tuple, float time_len) {
+    RecordInfo info;
+    static_cast<MediaTuple &>(info) = tuple;
+    info.file_path = path;
+    auto pos = path.find_last_of('/');
+    if (pos != std::string::npos) {
+        info.file_name = path.substr(pos + 1);
+        info.folder = path.substr(0, pos + 1);
+    } else {
+        info.file_name = path;
+    }
+    info.time_len = time_len;
+    info.file_size = toolkit::File::fileSize(path);
+    // 클립 첫 프레임의 대략적 벽시계(GMT, 초) = 종료 시각 - 클립 길이.
+    info.start_time = ::time(NULL) - (time_t)time_len;
+    // 연속녹화(MP4Recorder.cpp)와 동일한 이벤트를 쏜다. 노드는 경로로 클립/연속을 판별.
+    NOTICE_EMIT(BroadcastRecordMP4Args, Broadcast::kBroadcastRecordMP4, info);
+}
+#endif
 } // namespace
 
 class FramePacedSender : public FrameWriterInterface, public std::enable_shared_from_this<FramePacedSender> {
@@ -513,7 +542,8 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int
         }
 
         weak_ptr<MultiMediaSourceMuxer> weak_self = shared_from_this();
-        auto lam = [weak_self, muxer, forward_time_ms, have_history, path]() {
+        MediaTuple tuple = _tuple; // 완료 훅에 넣을 vhost/app/stream (RecordInfo 기반 클립 식별용)
+        auto lam = [weak_self, muxer, forward_time_ms, have_history, path, tuple]() {
             auto strong_self = weak_self.lock();
             if (!strong_self) {
                 return;
@@ -523,7 +553,7 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int
             Ticker ticker;
             bool is_live_stream = strong_self->_dur_sec < 0.01;
             auto reader = strong_self->_ring->attach(strong_self->MultiMediaSourceMuxer::getOwnerPoller(MediaSource::NullMediaSource()), !have_history, 1);
-            reader->setReadCB([muxer, now_dts, selected_index, forward_time_ms, reader, path, ticker, is_live_stream](const Frame::Ptr &frame) mutable {
+            reader->setReadCB([muxer, now_dts, selected_index, forward_time_ms, reader, path, tuple, ticker, is_live_stream](const Frame::Ptr &frame) mutable {
                 if (!reader) {
                     // 已经关闭录制
                     return;
@@ -537,7 +567,12 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int
                 if ((frame->getIndex() == selected_index && now_dts + forward_time_ms < frame->dts())
                     || (is_live_stream && ticker.createdTime() > forward_time_ms + 3000ULL)) {
                     InfoL << "stop record: " << path << ", end dts: " << frame->dts();
-                    WorkThreadPool::Instance().getPoller()->async([muxer]() { muxer->closeMP4(); });
+                    // closeMP4 전에 길이를 구하고, close 후 이벤트 클립 완료 훅을 emit (연속녹화와 동일 이벤트, 노드는 경로로 구분).
+                    WorkThreadPool::Instance().getPoller()->async([muxer, path, tuple]() {
+                        float time_len = muxer->getDuration() / 1000.0f;
+                        muxer->closeMP4();
+                        emitEventClipRecorded(path, tuple, time_len);
+                    });
                     reader = nullptr;
                     return;
                 }
@@ -561,6 +596,15 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int
                 return 0;
             });
         }
+    } else if (have_history) {
+        // forward 없는 순수 back(pre-only) 클립: 히스토리만 기록됐으므로 지금 닫고 완료 훅을 emit.
+        // (forward>0 경로는 위에서 reader 종료 시 emit. history 가 없으면 빈 파일이므로 emit 안 함.)
+        MediaTuple tuple = _tuple;
+        WorkThreadPool::Instance().getPoller()->async([muxer, path, tuple]() {
+            float time_len = muxer->getDuration() / 1000.0f;
+            muxer->closeMP4();
+            emitEventClipRecorded(path, tuple, time_len);
+        });
     }
 
     return path;
