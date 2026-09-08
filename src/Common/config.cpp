@@ -334,6 +334,7 @@ const string kFileBufSize = RECORD_FIELD "fileBufSize";
 const string kFastStart = RECORD_FIELD "fastStart";
 const string kFileRepeat = RECORD_FIELD "fileRepeat";
 const string kEnableFmp4 = RECORD_FIELD "enableFmp4";
+const string kEventPreBufferFrames = RECORD_FIELD "eventPreBufferFrames";
 
 static onceToken token([]() {
     mINI::Instance()[kAppName] = "record";
@@ -342,6 +343,11 @@ static onceToken token([]() {
     mINI::Instance()[kFastStart] = false;
     mINI::Instance()[kFileRepeat] = false;
     mINI::Instance()[kEnableFmp4] = false;
+    // 이벤트 클립(startRecord back/forward) pre-event 프리버퍼의 최대 프레임 수(전체 트랙 합산).
+    // 예전에는 코드에 1024 로 하드코딩돼 있었음. 프리버퍼가 담는 실제 시간 = min(이 프레임수, gop_cache 개수만큼의 GOP).
+    // 따라서 pre-event N초를 담으려면 이 값(프레임 상한)과 rtp_proxy.gop_cache(GOP 개수 상한)를 함께 키워야 한다.
+    // 1080p30·2트랙·60초 ≈ 4400프레임 수준이라 8192 로 넉넉히 잡음.
+    mINI::Instance()[kEventPreBufferFrames] = 8192;
 });
 } // namespace Record
 

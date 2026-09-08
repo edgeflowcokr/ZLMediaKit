@@ -509,6 +509,11 @@ extern const std::string kFileRepeat;
 // mp4录制文件是否采用fmp4格式  [AUTO-TRANSLATED:12559ae0]
 // Whether to use fmp4 format for MP4 recording files
 extern const std::string kEnableFmp4;
+// 事件录像(startRecord back/forward)的 pre-event 帧缓存最大帧数(所有轨道合计)
+// Max number of frames (summed over all tracks) held in the pre-event ring buffer used by
+// startRecord(back_time_ms, forward_time_ms). Actual pre-roll duration = min(this frame cap,
+// rtp_proxy.gop_cache GOPs), so to buffer N seconds both this and gop_cache must be raised.
+extern const std::string kEventPreBufferFrames;
 } // namespace Record
 
 // //////////HLS相关配置///////////  [AUTO-TRANSLATED:873cc84c]
