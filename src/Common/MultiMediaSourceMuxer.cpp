@@ -799,9 +799,13 @@ void MultiMediaSourceMuxer::createGopCacheIfNeed() {
         return;
     }
     GET_CONFIG(size_t, gop_cache, RtpProxy::kGopCache);
+    // 프리버퍼(링버퍼) 최대 프레임 수: 예전엔 1024 하드코딩. 이벤트 클립 pre-event 캐시가 이 링을 재사용하므로 설정값으로 뺀다.
+    // 실제 보관 시간 = min(이 프레임 상한, gop_cache 개수만큼의 GOP). pre-event N초 확보하려면 둘 다 키워야 함(config.ini 참고).
+    GET_CONFIG(size_t, event_pre_buffer_frames, Record::kEventPreBufferFrames);
+    auto ring_max_size = std::max<size_t>(event_pre_buffer_frames, 1);
     weak_ptr<MultiMediaSourceMuxer> weak_self = shared_from_this();
     auto src = std::make_shared<MediaSourceForMuxer>(weak_self.lock());
-    _ring = std::make_shared<RingType>(1024, [weak_self, src](int size) {
+    _ring = std::make_shared<RingType>(ring_max_size, [weak_self, src](int size) {
         if (auto strong_self = weak_self.lock()) {
             // 切换到归属线程  [AUTO-TRANSLATED:abcf859b]
             // Switch to the owning thread
