@@ -908,6 +908,19 @@ void installWebApi() {
         val["changed"] = changed;
     });
 
+    // 配置热重载: 디스크의 config.ini 를 다시 읽어 in-memory 설정에 반영한다(백엔드가 파일을 재렌더한 뒤 호출).
+    //   setServerConfig 는 POST 로 넘긴 키만 바꾸지만, 이 API 는 파일 전체를 다시 로드(loadIniConfig)해
+    //   gop_cache 등 백엔드 소유 값의 변경을 재기동(restartServer) 없이 메모리에 싣는다. 이어서 대상
+    //   스트림을 close_streams 로 재attach 하면 muxer 가 새 값으로 재생성돼 이벤트 클립 pre 버퍼가
+    //   무재기동으로 반영된다(결함182). SIGHUP 핸들러(비Windows)와 동일 동작을 API 로 노출(Windows 대응).
+    //   테스트 url http://127.0.0.1/index/api/loadMConfig?secret=xxx
+    api_regist("/index/api/loadMConfig",[](API_ARGS_MAP){
+        CHECK_SECRET();
+        bool ok = mediakit::loadIniConfig(g_ini_file.data());
+        val["result"] = ok ? 0 : -1;
+        val["msg"] = ok ? "config reloaded" : "reload failed";
+    });
+
 
     static auto s_get_api_list = [](API_ARGS_MAP){
         CHECK_SECRET();
