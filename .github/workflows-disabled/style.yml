@@ -1,3 +1,4 @@
+# EdgeFlowAI: CI disabled; archived outside .github/workflows.
 name: style check
 
 on: [pull_request]

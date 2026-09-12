@@ -1,4 +1,5 @@
-name: DockerPy
+# EdgeFlowAI: CI disabled; archived outside .github/workflows.
+name: Docker
 
 on:
   push:
@@ -69,10 +70,9 @@ jobs:
         with:
           context: .
           push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tags }}_py
+          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: MODEL=Release
-          file: ./dockerfile_py
           platforms: linux/amd64,linux/arm64
 
       # Sign the resulting Docker image digest except on PRs.

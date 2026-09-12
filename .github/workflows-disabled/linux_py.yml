@@ -1,3 +1,4 @@
+# EdgeFlowAI: CI disabled; archived outside .github/workflows.
 name: Linux_Python
 
 on: [push, pull_request]
