@@ -13,6 +13,7 @@
 #include "MultiMediaSourceMuxer.h"
 #include "Thread/WorkThreadPool.h"
 #include "Util/File.h"
+#include "Record/AsyncMP4Recorder.h"
 
 using namespace std;
 using namespace toolkit;
@@ -197,7 +198,16 @@ std::shared_ptr<MediaSinkInterface> MultiMediaSourceMuxer::makeRecorder(Recorder
         recorder->addTrack(track);
     }
     recorder->addTrackCompleted();
-    if (_ring) {
+    if (_ring && type == Recorder::type_mp4) {
+        // Continuous recording starts at the next live keyframe. The shared
+        // ring can contain minutes of event pre-roll, not just one GOP; replaying
+        // it here floods the bounded disk queue. Event startRecord keeps its
+        // separate, explicitly requested historical clip path unchanged.
+        size_t history_frames = 0;
+        _ring->flushGop([&](const Frame::Ptr &) { ++history_frames; });
+        InfoL << "[recording-start] channel=" << getMediaTuple().stream
+              << " history_frames_skipped=" << history_frames << " start=next_live_keyframe";
+    } else if (_ring) {
         _ring->flushGop([&](const Frame::Ptr &frame) {
             recorder->inputFrame(frame);
         });
@@ -616,7 +626,11 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int
 bool MultiMediaSourceMuxer::isRecording(Recorder::type type) {
     switch (type) {
         case Recorder::type_hls: return !!_hls;
-        case Recorder::type_mp4: return !!_mp4;
+        case Recorder::type_mp4:
+#if defined(ENABLE_MP4)
+            if (auto recorder = std::dynamic_pointer_cast<AsyncMP4Recorder>(_mp4)) return recorder->healthy();
+#endif
+            return !!_mp4;
         case Recorder::type_hls_fmp4: return !!_hls_fmp4;
         case Recorder::type_fmp4: return !!_fmp4;
         case Recorder::type_ts: return !!_ts;

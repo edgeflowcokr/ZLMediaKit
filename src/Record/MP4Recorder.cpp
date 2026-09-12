@@ -22,7 +22,7 @@ using namespace toolkit;
 
 namespace mediakit {
 
-MP4Recorder::MP4Recorder(const MediaTuple &tuple, const string &path, size_t max_second) {
+MP4Recorder::MP4Recorder(const MediaTuple &tuple, const string &path, size_t max_second, bool inline_close) : _inline_close(inline_close) {
     // ///record 业务逻辑//////  [AUTO-TRANSLATED:2e78931a]
     // ///record Business Logic//////
     static_cast<MediaTuple &>(_info) = tuple;
@@ -67,15 +67,17 @@ void MP4Recorder::createFile() {
         _full_path_tmp = full_path_tmp;
     } catch (std::exception &ex) {
         WarnL << ex.what();
+        _muxer = nullptr;
+        if (_inline_close) throw;
     }
 }
 
 void MP4Recorder::asyncClose() {
-    auto muxer = _muxer;
+    auto muxer = std::move(_muxer);
     auto full_path_tmp = _full_path_tmp;
     auto info = _info;
     TraceL << "Start close tmp mp4 file: " << full_path_tmp;
-    WorkThreadPool::Instance().getExecutor()->async([muxer, full_path_tmp, info]() mutable {
+    auto finish = [muxer, full_path_tmp, info]() mutable {
         info.time_len = muxer->getDuration() / 1000.0f;
         // 关闭mp4可能非常耗时，所以要放在后台线程执行  [AUTO-TRANSLATED:a7378a11]
         // Closing mp4 can be very time-consuming, so it should be executed in the background thread
@@ -100,7 +102,11 @@ void MP4Recorder::asyncClose() {
         // 触发mp4录制切片生成事件  [AUTO-TRANSLATED:9959dcd4]
         // Trigger mp4 recording slice generation event
         NOTICE_EMIT(BroadcastRecordMP4Args, Broadcast::kBroadcastRecordMP4, info);
-    });
+    };
+    // The bounded recording worker already owns this call. Do not enqueue
+    // unlimited finalizers on a shared pool if a storage device stops responding.
+    if (_inline_close) finish();
+    else WorkThreadPool::Instance().getExecutor()->async(std::move(finish));
 }
 
 void MP4Recorder::closeFile() {

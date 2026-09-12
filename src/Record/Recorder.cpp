@@ -13,6 +13,7 @@
 #include "Util/File.h"
 #include "Common/MediaSource.h"
 #include "MP4Recorder.h"
+#include "AsyncMP4Recorder.h"
 #include "HlsRecorder.h"
 #include "FMP4/FMP4MediaSourceMuxer.h"
 #include "TS/TSMediaSourceMuxer.h"
@@ -77,7 +78,7 @@ std::shared_ptr<MediaSinkInterface> Recorder::createRecorder(type type, const Me
         case Recorder::type_mp4: {
 #if defined(ENABLE_MP4)
             auto path = Recorder::getRecordPath(type, tuple, option.mp4_save_path);
-            return std::make_shared<MP4Recorder>(tuple, path, option.mp4_max_second);
+            return std::make_shared<AsyncMP4Recorder>(tuple, path, option.mp4_max_second);
 #else
             throw std::invalid_argument("mp4相关功能未打开，请开启ENABLE_MP4宏后编译再测试");
 #endif

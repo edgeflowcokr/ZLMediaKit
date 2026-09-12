@@ -26,8 +26,10 @@ class MP4Recorder final : public MediaSinkInterface {
 public:
     using Ptr = std::shared_ptr<MP4Recorder>;
 
-    MP4Recorder(const MediaTuple &tuple, const std::string &path, size_t max_second);
+    MP4Recorder(const MediaTuple &tuple, const std::string &path, size_t max_second, bool inline_close = false);
     ~MP4Recorder() override;
+    // Called on the bounded worker before releasing its final ownership.
+    void finish() { try { flush(); } catch (...) { closeFile(); throw; } closeFile(); }
 
     /**
      * 重置所有Track
@@ -68,6 +70,7 @@ private:
     void asyncClose();
 
 private:
+    bool _inline_close = false;
     bool _have_video = false;
     size_t _max_second;
     DeltaStamp _delta_stamp[TrackMax];
