@@ -1,3 +1,4 @@
+# EdgeFlowAI: CI disabled; archived outside .github/workflows.
 name: macOS_Python
 
 on: [push, pull_request]
