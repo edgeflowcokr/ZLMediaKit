@@ -96,7 +96,10 @@ void MP4Recorder::asyncClose() {
             }
             // 临时文件名改成正式文件名，防止mp4未完成时被访问  [AUTO-TRANSLATED:541a6f00]
             // Change the temporary file name to the official file name to prevent access to the mp4 before it is completed
-            rename(full_path_tmp.data(), info.file_path.data());
+            if (rename(full_path_tmp.data(), info.file_path.data()) != 0) {
+                ErrorL << "[recording-finalize-failed] source=" << full_path_tmp << " destination=" << info.file_path;
+                return; // Never announce a file that was not successfully published.
+            }
         }
         TraceL << "Emit mp4 record event: " << info.file_path;
         // 触发mp4录制切片生成事件  [AUTO-TRANSLATED:9959dcd4]

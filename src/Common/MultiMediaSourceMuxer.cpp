@@ -14,6 +14,7 @@
 #include "Thread/WorkThreadPool.h"
 #include "Util/File.h"
 #include "Record/AsyncMP4Recorder.h"
+#include "Record/AsyncEventMP4.h"
 
 using namespace std;
 using namespace toolkit;
@@ -400,6 +401,17 @@ bool MultiMediaSourceMuxer::setupRecord(MediaSource &sender, Recorder::type type
             return true;
         }
         case Recorder::type_mp4 : {
+#if defined(ENABLE_MP4)
+            if (start && _mp4) {
+                auto previous = std::dynamic_pointer_cast<AsyncMP4Recorder>(_mp4);
+                if (previous && !previous->healthy()) {
+                    if (!previous->canReplace()) return false;
+                    WarnL << "[recording-recovery] channel=" << _tuple.stream
+                          << " action=replace_failed_recorder old_writer_finished=1";
+                    _mp4 = nullptr;
+                }
+            }
+#endif
             if (start && !_mp4) {
                 // 开始录制  [AUTO-TRANSLATED:36d99250]
                 // Start recording
@@ -476,7 +488,9 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int
     }
     TraceL << "mp4 save path: " << path;
 
-    auto muxer = std::make_shared<MP4Muxer>();
+    auto muxer = std::make_shared<AsyncEventMP4>([path](const char* reason) {
+        ErrorL << "[event-recording-degraded] path=" << path << " reason=" << reason;
+    });
     muxer->openMP4(path);
     for (auto &track : MediaSink::getTracks()) {
         muxer->addTrack(track);
@@ -540,9 +554,7 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int
                 have_history = true;
             }
 
-            for (auto &frame : history) {
-                muxer->inputFrame(frame);
-            }
+            muxer->inputHistory(history);
         }
     }
 
@@ -563,7 +575,19 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int
             Ticker ticker;
             bool is_live_stream = strong_self->_dur_sec < 0.01;
             auto reader = strong_self->_ring->attach(strong_self->MultiMediaSourceMuxer::getOwnerPoller(MediaSource::NullMediaSource()), !have_history, 1);
-            reader->setReadCB([muxer, now_dts, selected_index, forward_time_ms, reader, path, tuple, ticker, is_live_stream](const Frame::Ptr &frame) mutable {
+            // All callbacks below run on this reader's owner poller. A separate
+            // deadline is essential: a stopped camera cannot trigger a frame callback.
+            auto finalized = std::make_shared<bool>(false);
+            auto finish = std::make_shared<std::function<void(const char*)>>(
+                [muxer, path, tuple, finalized](const char* reason) {
+                    if (*finalized) return;
+                    *finalized = true;
+                    if (std::string(reason) != "duration")
+                        WarnL << "[event-recording-truncated] stream=" << tuple.shortUrl() << " path=" << path << " reason=" << reason;
+                    if (!muxer->finish([path, tuple](float seconds) { emitEventClipRecorded(path, tuple, seconds); }))
+                        ErrorL << "[event-recording-finalize-rejected] stream=" << tuple.shortUrl() << " path=" << path;
+                });
+            reader->setReadCB([muxer, now_dts, selected_index, forward_time_ms, reader, path, tuple, ticker, is_live_stream, finish](const Frame::Ptr &frame) mutable {
                 if (!reader) {
                     // 已经关闭录制
                     return;
@@ -578,23 +602,30 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int
                     || (is_live_stream && ticker.createdTime() > forward_time_ms + 3000ULL)) {
                     InfoL << "stop record: " << path << ", end dts: " << frame->dts();
                     // closeMP4 전에 길이를 구하고, close 후 이벤트 클립 완료 훅을 emit (연속녹화와 동일 이벤트, 노드는 경로로 구분).
-                    WorkThreadPool::Instance().getPoller()->async([muxer, path, tuple]() {
-                        float time_len = muxer->getDuration() / 1000.0f;
-                        muxer->closeMP4();
-                        emitEventClipRecorded(path, tuple, time_len);
-                    });
+                    (*finish)("duration");
                     reader = nullptr;
                     return;
                 }
-                muxer->inputFrame(frame);
+                if (!muxer->inputFrame(frame)) reader = nullptr;
             });
             std::weak_ptr<RingType::RingReader> weak_reader = reader;
-            reader->setDetachCB([weak_reader]() {
+            reader->setDetachCB([weak_reader, finish]() {
+                (*finish)("stream_detached");
                 if (auto strong_reader = weak_reader.lock()) {
                     // 防止循环引用
                     strong_reader->setReadCB(nullptr);
                 }
             });
+            // Weak captures avoid retaining a completed writer/worker until the deadline.
+            std::weak_ptr<std::function<void(const char*)>> weak_finish = finish;
+            if (is_live_stream) {
+                strong_self->MultiMediaSourceMuxer::getOwnerPoller(MediaSource::NullMediaSource())->doDelayTask(
+                    static_cast<uint64_t>(forward_time_ms) + 3000ULL, [weak_reader, weak_finish]() -> uint64_t {
+                        if (auto complete = weak_finish.lock()) (*complete)("wall_clock_deadline");
+                        if (auto active = weak_reader.lock()) active->setReadCB(nullptr);
+                        return 0;
+                    });
+            }
         };
         if (back_time_ms >= 0) {
             // 立即前向录制
@@ -610,9 +641,7 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int
         // forward 없는 순수 back(pre-only) 클립: 히스토리만 기록됐으므로 지금 닫고 완료 훅을 emit.
         // (forward>0 경로는 위에서 reader 종료 시 emit. history 가 없으면 빈 파일이므로 emit 안 함.)
         MediaTuple tuple = _tuple;
-        WorkThreadPool::Instance().getPoller()->async([muxer, path, tuple]() {
-            float time_len = muxer->getDuration() / 1000.0f;
-            muxer->closeMP4();
+        muxer->finish([path, tuple](float time_len) {
             emitEventClipRecorded(path, tuple, time_len);
         });
     }
