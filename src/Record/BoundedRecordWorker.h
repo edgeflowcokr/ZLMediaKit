@@ -23,6 +23,7 @@ class BoundedRecordWorker {
         bool stop = false;
         std::atomic<bool> failed{false};
         std::atomic<long long> started{0};
+        std::atomic<long long> finished{0};
         std::function<void(const char*)> report;
         std::function<void()> finalize;
     };
@@ -60,6 +61,7 @@ public:
                 // Release captured recorder on this worker, never on the caller.
                 state->finalize = nullptr;
                 --slots();
+                state->finished = now();
             }).detach();
         } catch (...) { --slots(); throw; }
     }
@@ -69,6 +71,12 @@ public:
     bool healthy() const {
         const auto started = _state->started.load();
         return !_state->failed && (!started || now() - started <= 5000);
+    }
+    // Never replace a recorder while its old disk call/finalizer owns the file.
+    // Cooldown also bounds repeated attempts on an unavailable storage device.
+    bool canReplace(long long cooldown_ms = 30000) const {
+        const auto finished = _state->finished.load();
+        return _state->failed && finished && now() - finished >= cooldown_ms;
     }
     bool submit(std::function<void()> task, size_t bytes = 0) {
         bool failure = false;
