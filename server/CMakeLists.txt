@@ -43,6 +43,9 @@ if(IOS)
   add_library(MediaServer STATIC ${MediaServer_SRC_LIST})
 else()
   add_executable(MediaServer ${MediaServer_SRC_LIST})
+  if(WIN32 AND EF_MEDIA_CANDIDATE)
+    set_target_properties(MediaServer PROPERTIES OUTPUT_NAME MediaServer-next PDB_NAME MediaServer-next)
+  endif()
 endif()
 
 target_compile_definitions(MediaServer
