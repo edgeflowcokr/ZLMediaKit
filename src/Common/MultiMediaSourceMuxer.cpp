@@ -579,13 +579,17 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int
             // deadline is essential: a stopped camera cannot trigger a frame callback.
             auto finalized = std::make_shared<bool>(false);
             auto finish = std::make_shared<std::function<void(const char*)>>(
-                [muxer, path, tuple, finalized](const char* reason) {
+                [muxer, path, tuple, finalized, weak_self](const char* reason) {
                     if (*finalized) return;
                     *finalized = true;
-                    if (std::string(reason) != "duration")
+                    // "duration"(전향 상한 도달)·"early_stop"(END+post 정밀 트림)은 정상 마감이라 경고 안 함.
+                    std::string r(reason);
+                    if (r != "duration" && r != "early_stop")
                         WarnL << "[event-recording-truncated] stream=" << tuple.shortUrl() << " path=" << path << " reason=" << reason;
                     if (!muxer->finish([path, tuple](float seconds) { emitEventClipRecorded(path, tuple, seconds); }))
                         ErrorL << "[event-recording-finalize-rejected] stream=" << tuple.shortUrl() << " path=" << path;
+                    // 조기종료 핸들 정리(완료된 녹화가 맵에 남지 않도록). owner poller 컨텍스트라 안전.
+                    if (auto self = weak_self.lock()) self->_event_rec_stoppers.erase(path);
                 });
             reader->setReadCB([muxer, now_dts, selected_index, forward_time_ms, reader, path, tuple, ticker, is_live_stream, finish](const Frame::Ptr &frame) mutable {
                 if (!reader) {
@@ -626,6 +630,12 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int
                         return 0;
                     });
             }
+            // 결함234 정밀 트림: END+post 에 노드가 stopRecord(path) 로 이 녹화를 조기 종료할 수 있도록
+            //   종료 functor 를 등록한다(owner poller 접근). finish 가 완료 시 이 항목을 erase 한다.
+            strong_self->_event_rec_stoppers[path] = [weak_finish, weak_reader]() {
+                if (auto complete = weak_finish.lock()) (*complete)("early_stop");
+                if (auto active = weak_reader.lock()) active->setReadCB(nullptr);
+            };
         };
         if (back_time_ms >= 0) {
             // 立即前向录制
@@ -647,6 +657,31 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int
     }
 
     return path;
+#endif
+}
+
+// 결함234 정밀 트림: 진행 중 이벤트 클립을 조기 종료(END+post). owner poller 컨텍스트에서 호출한다
+//   (startRecordTask API 와 동일 — WebApi 가 src->getOwnerPoller()->async 안에서 호출). file_path 정규화는
+//   startRecord 와 동일해야 키가 일치한다.
+bool MultiMediaSourceMuxer::stopRecord(const std::string &file_path) {
+#if !defined(ENABLE_MP4)
+    return false;
+#else
+    std::string path;
+    if (!start_with(file_path, "/")) {
+        path = Recorder::getRecordPath(Recorder::type_mp4, _tuple, _option.mp4_save_path);
+        path += file_path;
+    } else {
+        path = file_path;
+    }
+    auto it = _event_rec_stoppers.find(path);
+    if (it == _event_rec_stoppers.end()) {
+        return false; // 이미 마감됐거나(전향 상한/detach) 시작 전 — 조용히 무시(재생엔 영향 없음).
+    }
+    auto stopper = it->second; // finish 가 맵을 erase 하므로 functor 를 먼저 복사해 둔다.
+    InfoL << "stop record (early): " << path;
+    stopper();
+    return true;
 #endif
 }
 

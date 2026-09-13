@@ -1875,6 +1875,32 @@ void installWebApi() {
         });
     });
 
+    // 진행 중인 이벤트 클립(startRecordTask)을 조기 종료(결함234 정밀 트림). 노드가 이벤트 END+post 시점에
+    //   startRecordTask 때와 같은 path 로 호출해 클립을 [BEGIN-pre, END+post] 로 마감시킨다.
+    api_regist("/index/api/stopRecordTask",[](API_ARGS_MAP_ASYNC){
+        CHECK_SECRET();
+        CHECK_ARGS("vhost", "app", "stream", "path");
+
+        auto src = MediaSource::find(allArgs["vhost"], allArgs["app"], allArgs["stream"]);
+        if (!src) {
+            throw ApiRetException("can not find the stream", API::NotFound);
+        }
+
+        src->getOwnerPoller()->async([=]() mutable {
+            bool ok = false;
+            std::string err;
+            try {
+                ok = src->getMuxer()->stopRecord(allArgs["path"]);
+            } catch (std::exception &ex) {
+                err = ex.what();
+            }
+            val["code"] = err.empty() ? API::Success : API::OtherFailed;
+            val["data"]["ok"] = ok; // false = 이미 마감됐거나 해당 경로 활성 녹화 없음(정상, 재생엔 무영향)
+            val["msg"] = err;
+            invoker(200, headerOut, val.toStyledString());
+        });
+    });
+
     // 设置录像流播放速度  [AUTO-TRANSLATED:a8d82298]
     // Set the playback speed of the recording stream
     api_regist("/index/api/setRecordSpeed", [](API_ARGS_MAP_ASYNC) {

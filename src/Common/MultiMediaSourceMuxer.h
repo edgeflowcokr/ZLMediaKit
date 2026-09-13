@@ -135,6 +135,14 @@ public:
     std::string startRecord(const std::string &file_path, int back_time_ms, int forward_time_ms);
 
     /**
+     * 진행 중인 이벤트 클립(startRecord back/forward) 녹화를 조기 종료한다(결함234 정밀 트림).
+     * 이벤트 END+post 시점에 노드가 호출해 클립을 [BEGIN-pre, END+post] 로 마감시킨다(moov 정상 기록).
+     * owner poller 컨텍스트에서 호출한다(startRecord 와 동일). file_path 는 startRecord 에 넘긴 것과 동일.
+     * @return 해당 경로의 활성 이벤트 녹화를 찾아 종료 요청했으면 true, 없으면 false.
+     */
+    bool stopRecord(const std::string &file_path);
+
+    /**
      * 获取录制状态
      * @param type 录制类型
      * @return 录制状态
@@ -258,6 +266,9 @@ private:
     HlsFMP4Recorder::Ptr _hls_fmp4;
     toolkit::EventPoller::Ptr _poller;
     RingType::Ptr _ring;
+    // 진행 중 이벤트 클립(startRecord) 조기 종료용 핸들. key = 클립 절대경로, value = 종료 functor
+    //   (finish("early_stop")+reader 정리). 모두 owner poller 에서만 접근(mutex 불요). 완료 시 자가 erase.
+    std::unordered_map<std::string, std::function<void()>> _event_rec_stoppers;
     MediaSinkInterface::Ptr _delegate;
     // 对象个数统计  [AUTO-TRANSLATED:3b43e8c2]
     // Object count statistics
