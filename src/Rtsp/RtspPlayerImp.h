@@ -24,6 +24,8 @@ class RtspPlayerImp : public PlayerImp<RtspPlayer, PlayerBase> ,private TrackLis
 public:
     using Ptr = std::shared_ptr<RtspPlayerImp>;
     using Super = PlayerImp<RtspPlayer, PlayerBase>;
+    // Non-blocking observer installed on the player poller before subsequent demux.
+    void setRtpObserver(std::function<void(const RtpPacket::Ptr&)> cb) { _rtp_observer=std::move(cb); }
 
     RtspPlayerImp(const toolkit::EventPoller::Ptr &poller) : Super(poller) {}
 
@@ -80,6 +82,7 @@ private:
 
 private:
     RtspDemuxer::Ptr _demuxer;
+    std::function<void(const RtpPacket::Ptr&)> _rtp_observer;
     RtspMediaSource::Ptr _rtsp_media_src;
 };
 

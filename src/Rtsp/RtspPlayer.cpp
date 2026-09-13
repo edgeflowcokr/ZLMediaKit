@@ -992,6 +992,7 @@ bool RtspPlayerImp::onCheckSDP(const std::string &sdp) {
 }
 
 void RtspPlayerImp::onRecvRTP(RtpPacket::Ptr rtp, const SdpTrack::Ptr &track) {
+    if (_rtp_observer) _rtp_observer(rtp);
     // rtp解复用时可以判断是否为关键帧起始位置  [AUTO-TRANSLATED:fb7d9b6e]
     // When demultiplexing RTP, it can be determined whether it is the starting position of the key frame
     auto key_pos = _demuxer->inputRtp(rtp);
