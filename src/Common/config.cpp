@@ -106,6 +106,7 @@ const string kWaitAddTrackMS = GENERAL_FIELD "wait_add_track_ms";
 const string kUnreadyFrameCache = GENERAL_FIELD "unready_frame_cache";
 const string kBroadcastPlayerCountChanged = GENERAL_FIELD "broadcast_player_count_changed";
 const string kListenIP = GENERAL_FIELD "listen_ip";
+const string kEnableConsoleLog = GENERAL_FIELD "enable_console_log";
 
 static onceToken token([]() {
     mINI::Instance()[kFlowThreshold] = 1024;
@@ -123,6 +124,7 @@ static onceToken token([]() {
     mINI::Instance()[kUnreadyFrameCache] = 100;
     mINI::Instance()[kBroadcastPlayerCountChanged] = 0;
     mINI::Instance()[kListenIP] = "::";
+    mINI::Instance()[kEnableConsoleLog] = 1;
 });
 
 } // namespace General

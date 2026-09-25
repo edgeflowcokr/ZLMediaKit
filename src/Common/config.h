@@ -275,6 +275,15 @@ extern const std::string kBroadcastPlayerCountChanged;
 // 绑定的本地网卡ip  [AUTO-TRANSLATED:daa90832]
 // Bound local network card ip
 extern const std::string kListenIP;
+// 是否将日志同时输出到控制台(stdout)。默认1(保留原行为，Linux/docker 环境靠 stdout 看日志)。
+// nssm(Windows 서비스)로 기동 시 stdout 을 그대로 파일에 append 해 무제한으로 커진다
+// (AppRotateOnline=1 은 nssm StopPending 사고 원인이라 온라인 로테이션 불가, 결함114 참고).
+// 자체 FileChannel(날짜별 로그, setMaxDay/setFileMaxCount/setFileMaxSize 로 상한 보유)이 이미
+// 동일 정보를 기록하므로, 서비스 배포에서는 0으로 꺼서 nssm stdout 로그 중복 누적을 막는다(0 이어도 콘솔에 오류 레벨은
+// 남는다). 값은 백엔드 -media-console-log 가 config.ini 에 렌더한다(기본 1, Windows 서비스 설치만 0).
+// 0 이어도 config.ini 로드 이전(파싱 오류 등) 및 config.ini 로드 직후 이 값을 판정하기 전까지는
+// 콘솔 채널이 살아있어 기동 실패가 조용히 묻히지 않는다.
+extern const std::string kEnableConsoleLog;
 } // namespace General
 
 namespace Protocol {

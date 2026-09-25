@@ -148,7 +148,9 @@ public:
         (*_parser) << Option('m',/*该选项简称，如果是\x00则说明无简称*/
                              "max_day",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
                              Option::ArgRequired,/*该选项后面必须跟值*/
-                             "7",/*该选项默认值*/
+                             // EdgeFlowAI 세 서비스 공통 로그 기준(30일 · 파일당 50MB · 활성+10개, docs/LOGGING_AND_RETENTION.md).
+                             // 설치 인자로 넘기지 않고 기본값을 바꿔 Windows 서비스·Linux docker 모두 같은 상한을 쓴다.
+                             "30",/*该选项默认值(원본 7)*/
                              false,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
                              "日志最多保存天数",/*该选项说明文字*/
                              nullptr);
@@ -200,7 +202,8 @@ public:
         (*_parser) << Option(0,/*该选项简称，如果是\x00则说明无简称*/
                              "log-slice",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
                              Option::ArgRequired,/*该选项后面必须跟值*/
-                             "100",/*该选项默认值*/
+                             // FileChannel 은 활성 파일을 포함해 센다 → 11 = 활성 1 + 지난 파일 10(백엔드·노드와 같은 의미).
+                             "11",/*该选项默认值(원본 100)*/
                              true,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
                              "最大保存日志切片个数",/*该选项说明文字*/
                              nullptr);
@@ -208,7 +211,7 @@ public:
         (*_parser) << Option(0,/*该选项简称，如果是\x00则说明无简称*/
                              "log-size",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
                              Option::ArgRequired,/*该选项后面必须跟值*/
-                             "256",/*该选项默认值*/
+                             "50",/*该选项默认值(원본 256)*/
                              true,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
                              "单个日志切片最大容量,单位MB",/*该选项说明文字*/
                              nullptr);
@@ -216,7 +219,10 @@ public:
         (*_parser) << Option(0,/*该选项简称，如果是\x00则说明无简称*/
                              "log-dir",/*该选项全称,每个选项必须有全称；不得为null或空字符串*/
                              Option::ArgRequired,/*该选项后面必须跟值*/
-                             (exeDir() + "log/").data(),/*该选项默认值*/
+                             // 원본 exeDir()+"log/". FileChannel 은 폴더의 *.log 전부를 자기 슬라이스로 세는데, Windows 서비스는
+                             // nssm 표준출력 캡처(log/EdgeFlowAI-Media*.log)가 같은 폴더에 쌓여 슬라이스 자리를 먹는다(개수 상한이
+                             // 작아지면 지난 날짜 로그가 곧바로 지워짐). 전용 하위 폴더로 분리한다.
+                             (exeDir() + "log/mediakit/").data(),/*该选项默认值*/
                              true,/*该选项是否必须赋值，如果没有默认值且为ArgRequired时用户必须提供该参数否则将抛异常*/
                              "日志保存文件夹路径",/*该选项说明文字*/
                              nullptr);
@@ -296,6 +302,18 @@ int start_main(int argc,char *argv[]) {
         // 加载配置文件，如果配置文件不存在就创建一个  [AUTO-TRANSLATED:761e7479]
         // Load configuration file, create one if it doesn't exist
         loadIniConfig(g_ini_file.data());
+
+        // general.enable_console_log=0 이면 콘솔(stdout)에는 오류(LError)만 남긴다. nssm(Windows 서비스)가
+        // stdout 을 파일로 append 리다이렉트해 상한 없이 커지는 문제(온라인 로테이션은 StopPending
+        // 사고 원인이라 불가) 대응. 자체 FileChannel(상한 보유)이 모든 레벨을 계속 기록한다.
+        // 여기까지(설정 파싱 실패 등)의 기동 오류는 콘솔 채널이 아직 전 레벨이라 표준출력에 남고,
+        // 이후 오류도 콘솔에 남아 조용히 묻히지 않는다(세 서비스 공통 기준 ②, docs/LOGGING_AND_RETENTION.md).
+        if (!(bool) mINI::Instance()[General::kEnableConsoleLog]) {
+            InfoL << General::kEnableConsoleLog << "=0, console log channel: errors only from here (full log: "
+                  << cmd_main["log-dir"] << ")";
+            Logger::Instance().del("ConsoleChannel");
+            Logger::Instance().add(std::make_shared<ConsoleChannel>("ConsoleChannel", LError));
+        }
 
         auto &secret = mINI::Instance()[API::kSecret];
         if (secret == "035c73f7-bb6b-4889-a715-d9eb2d1925cc" || secret.empty()) {
