@@ -335,6 +335,8 @@ const string kFastStart = RECORD_FIELD "fastStart";
 const string kFileRepeat = RECORD_FIELD "fileRepeat";
 const string kEnableFmp4 = RECORD_FIELD "enableFmp4";
 const string kEventPreBufferFrames = RECORD_FIELD "eventPreBufferFrames";
+const string kQueueMaxMB = RECORD_FIELD "queueMaxMB";
+const string kStallToleranceMs = RECORD_FIELD "stallToleranceMs";
 
 static onceToken token([]() {
     mINI::Instance()[kAppName] = "record";
@@ -348,6 +350,14 @@ static onceToken token([]() {
     // 따라서 pre-event N초를 담으려면 이 값(프레임 상한)과 rtp_proxy.gop_cache(GOP 개수 상한)를 함께 키워야 한다.
     // 1080p30·2트랙·60초 ≈ 4400프레임 수준이라 8192 로 넉넉히 잡음.
     mINI::Instance()[kEventPreBufferFrames] = 8192;
+    // mp4 녹화 비동기 쓰기 큐(BoundedRecordWorker) 녹화기당 상주 바이트 예산(MiB, 페이로드+항목당 256B, 처리 중 포함).
+    // SMR HDD 쓰기 정지 동안 프레임을 여기 쌓는다. 크기 규칙: 예산 >= 비트레이트 x 허용시간 x 1.2
+    // (.5 실측 스트림 최대 6.8Mbps → 6.8/8 x 90 x 1.2 ≈ 92MB → 96). 최악 상주 메모리 = 전역 작업자 32 x 이 값.
+    // 기본값·범위 정본은 RecordQueueLimits(Record/BoundedRecordWorker.h).
+    mINI::Instance()[kQueueMaxMB] = 96;
+    // 디스크 호출 1회 정지 허용시간(ms). 넘기면 녹화기 실패(받은 프레임은 써서 마감)→교체. 이내면 큐 여유가 있는 한 녹화 유지.
+    // SMR 실측 최대 정지 65.7초 + 여유 → 기본 90000. 허용 범위 [5000, 600000].
+    mINI::Instance()[kStallToleranceMs] = 90000;
 });
 } // namespace Record
 

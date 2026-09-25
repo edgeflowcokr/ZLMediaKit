@@ -1980,6 +1980,30 @@ void installWebApi() {
         auto type = (Recorder::type)allArgs["type"].as<int>();
         src->getOwnerPoller()->async([=]() mutable {
             val["status"] = src->isRecording(type);
+            // 추가 필드(기존 계약 불변): 연속 mp4 녹화 쓰기 큐 계측. 녹화 용량 여유율 산정·입장제어용.
+            // 계측 실패(리스너 소멸 등)는 응답을 막지 않는다 — status 는 위에서 이미 산출, invoker 는 항상 호출.
+            if (type == Recorder::type_mp4) try {
+                BoundedRecordWorker::Stats stats;
+                auto muxer = src->getMuxer();
+                if (muxer && muxer->getRecordQueueStats(stats)) {
+                    Json::Value q; // 완성본만 응답에 붙인다(도중 예외 시 반쪽 객체 방지)
+                    q["queued_bytes"] = (Json::UInt64) stats.queued_bytes;
+                    q["queued_items"] = (Json::UInt64) stats.queued_items;
+                    q["peak_bytes"] = (Json::UInt64) stats.peak_bytes;
+                    q["peak_items"] = (Json::UInt64) stats.peak_items;
+                    q["peak_call_ms"] = (Json::Int64) stats.peak_call_ms;
+                    q["active_task_ms"] = (Json::Int64) stats.active_task_ms;
+                    q["budget_bytes"] = (Json::UInt64) stats.limits.max_bytes;
+                    q["item_cap"] = (Json::UInt64) stats.limits.max_items;
+                    q["tolerance_ms"] = (Json::Int64) stats.limits.stall_tolerance_ms;
+                    q["failed"] = stats.failed;
+                    val["recordQueue"] = q;
+                }
+            } catch (const std::exception &ex) {
+                DebugL << "isRecording recordQueue stats skipped: " << src->getUrl() << " " << ex.what();
+            } catch (...) {
+                DebugL << "isRecording recordQueue stats skipped: " << src->getUrl() << " non-standard exception";
+            }
             invoker(200, headerOut, val.toStyledString());
         });
     });

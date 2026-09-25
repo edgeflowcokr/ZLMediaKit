@@ -43,7 +43,7 @@ public:
 // 주의: time_len 은 반드시 muxer->closeMP4() 호출 전에 muxer->getDuration() 으로 구해 넘겨야 한다
 //       (closeMP4 가 _tracks 를 비워 이후 getDuration()==0). file_size 는 close 후 파일이 확정된 뒤 읽는다.
 //       이 순서는 MP4Recorder::asyncClose 와 동일하다.
-static void emitEventClipRecorded(const std::string &path, const MediaTuple &tuple, float time_len) {
+static void emitEventClipRecorded(const std::string &path, const MediaTuple &tuple, const AsyncEventMP4::Result &result) {
     RecordInfo info;
     static_cast<MediaTuple &>(info) = tuple;
     info.file_path = path;
@@ -54,10 +54,17 @@ static void emitEventClipRecorded(const std::string &path, const MediaTuple &tup
     } else {
         info.file_name = path;
     }
-    info.time_len = time_len;
-    info.file_size = toolkit::File::fileSize(path);
-    // 클립 첫 프레임의 대략적 벽시계(GMT, 초) = 종료 시각 - 클립 길이.
-    info.start_time = ::time(NULL) - (time_t)time_len;
+    info.time_len = result.seconds;
+    // 크기·시작 시각은 작업자가 마감하며 구한 값(여기서는 디스크 호출 없음 — poller 에서 불려도 안전).
+    info.file_size = result.file_size;
+    // 첫 프레임 수신 벽시계(요청 시점 기준 산정). 마감 시각에서 길이를 빼면 쓰기 큐 지연만큼 밀린다.
+    info.start_time = result.start_time ? result.start_time : ::time(NULL) - (time_t)result.seconds;
+    if (result.degraded) {
+        // 저장소 정지·예산 초과로 작업자가 실패했지만 받은 프레임은 써서 정상 마감된 클립. RecordInfo 는 업스트림 공용
+        // 계약(모든 녹화 훅)이라 필드를 늘리지 않고 로그로 남긴다.
+        WarnL << "[event-recording-degraded-complete] stream=" << tuple.shortUrl() << " path=" << path
+              << " seconds=" << result.seconds << " size=" << result.file_size;
+    }
     // 연속녹화(MP4Recorder.cpp)와 동일한 이벤트를 쏜다. 노드는 경로로 클립/연속을 판별.
     NOTICE_EMIT(BroadcastRecordMP4Args, Broadcast::kBroadcastRecordMP4, info);
 }
@@ -490,14 +497,15 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int
 
     auto muxer = std::make_shared<AsyncEventMP4>([path](const char* reason) {
         ErrorL << "[event-recording-degraded] path=" << path << " reason=" << reason;
+    }, [path](const std::string &fields, bool warn) {
+        // 이벤트 클립 큐 계측(연속 녹화의 [recording-queue] 와 같은 필드).
+        if (warn) WarnL << "[event-recording-queue] path=" << path << " " << fields;
+        else InfoL << "[event-recording-queue] path=" << path << " " << fields;
     });
-    muxer->openMP4(path);
-    for (auto &track : MediaSink::getTracks()) {
-        muxer->addTrack(track);
-    }
-    muxer->addTrackCompleted();
 
+    // 이력은 파일을 열기 전에 계획(검증·자르기)한다: 표현 불가면 여기서 예외가 나가 빈 mp4 가 남지 않는다.
     bool have_history = false;
+    AsyncEventMP4::HistoryPlan history_plan;
     if (back_time_ms > 0) {
         // 回溯录制
         std::list<Frame::Ptr> history;
@@ -552,10 +560,18 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int
                       << ", start_dts: " << front->dts() << ", key_frame: " << front->keyFrame() << ", config_frame: " << front->configFrame()
                       << ", now_dts: " << now_dts;
                 have_history = true;
+                history_plan = muxer->planHistory(history);
             }
-
-            muxer->inputHistory(history);
         }
+    }
+
+    muxer->openMP4(path);
+    for (auto &track : MediaSink::getTracks()) {
+        muxer->addTrack(track);
+    }
+    muxer->addTrackCompleted();
+    if (have_history) {
+        muxer->inputHistory(std::move(history_plan));
     }
 
     if (forward_time_ms > 0) {
@@ -586,7 +602,9 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int
                     std::string r(reason);
                     if (r != "duration" && r != "early_stop")
                         WarnL << "[event-recording-truncated] stream=" << tuple.shortUrl() << " path=" << path << " reason=" << reason;
-                    if (!muxer->finish([path, tuple](float seconds) { emitEventClipRecorded(path, tuple, seconds); }))
+                    // 작업자가 실패했어도 받은 프레임은 drain·마감되므로 파일이 유효하면 degraded 로 통지된다.
+                    // false 는 알릴 파일이 없다는 뜻(열기 실패·muxer 예외·빈 파일).
+                    if (!muxer->finish([path, tuple](const AsyncEventMP4::Result &result) { emitEventClipRecorded(path, tuple, result); }))
                         ErrorL << "[event-recording-finalize-rejected] stream=" << tuple.shortUrl() << " path=" << path;
                     // 조기종료 핸들 정리(완료된 녹화가 맵에 남지 않도록). owner poller 컨텍스트라 안전.
                     if (auto self = weak_self.lock()) self->_event_rec_stoppers.erase(path);
@@ -610,7 +628,11 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int
                     reader = nullptr;
                     return;
                 }
-                if (!muxer->inputFrame(frame)) reader = nullptr;
+                if (!muxer->inputFrame(frame)) {
+                    // 저장소 정지·예산 초과로 작업자 실패: 더 넣을 수 없으니 지금 마감 요청(받은 프레임은 drain 후 통지).
+                    (*finish)("storage_degraded");
+                    reader = nullptr;
+                }
             });
             std::weak_ptr<RingType::RingReader> weak_reader = reader;
             reader->setDetachCB([weak_reader, finish]() {
@@ -651,8 +673,8 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int
         // forward 없는 순수 back(pre-only) 클립: 히스토리만 기록됐으므로 지금 닫고 완료 훅을 emit.
         // (forward>0 경로는 위에서 reader 종료 시 emit. history 가 없으면 빈 파일이므로 emit 안 함.)
         MediaTuple tuple = _tuple;
-        muxer->finish([path, tuple](float time_len) {
-            emitEventClipRecorded(path, tuple, time_len);
+        muxer->finish([path, tuple](const AsyncEventMP4::Result &result) {
+            emitEventClipRecorded(path, tuple, result);
         });
     }
 
@@ -700,6 +722,16 @@ bool MultiMediaSourceMuxer::isRecording(Recorder::type type) {
         case Recorder::type_ts: return !!_ts;
         default: return false;
     }
+}
+
+bool MultiMediaSourceMuxer::getRecordQueueStats(BoundedRecordWorker::Stats &out) {
+#if defined(ENABLE_MP4)
+    if (auto recorder = std::dynamic_pointer_cast<AsyncMP4Recorder>(_mp4)) {
+        out = recorder->queueStats();
+        return true;
+    }
+#endif
+    return false;
 }
 
 void MultiMediaSourceMuxer::startSendRtp(const MediaSourceEvent::SendRtpArgs &args, const std::function<void(uint16_t, const toolkit::SockException &)> cb) {

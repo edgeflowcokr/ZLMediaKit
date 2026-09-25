@@ -8,7 +8,10 @@
  * may be found in the AUTHORS file in the root of the source tree.
  */
 
+#include <atomic>
+#include <climits>
 #include "Recorder.h"
+#include "BoundedRecordWorker.h"
 #include "Common/config.h"
 #include "Util/File.h"
 #include "Common/MediaSource.h"
@@ -114,6 +117,25 @@ std::shared_ptr<MediaSinkInterface> Recorder::createRecorder(type type, const Me
 
         default: throw std::invalid_argument("未知的录制类型");
     }
+}
+
+RecordQueueLimits RecordQueueLimits::configured() {
+    // 호출 스레드(녹화기 생성 지점)에서 읽는다. GET_CONFIG 는 설정 재적재를 구독한다.
+    // 범위·기본값은 RecordQueueLimits(헤더)가 정본: queueMaxMB [4,256] 기본 96, stallToleranceMs [5000,600000] 기본 90000.
+    //   queueMaxMB 상한 256: 전역 슬롯 32 x 256MiB = 8GiB 가 최악 상주량이라 그 이상은 설정 실수로 본다.
+    //   stallToleranceMs 하한 5000: 예전 고정값. 더 짧으면 SMR 정지마다 녹화가 끊기던 원래 결함이 재발한다.
+    //   stallToleranceMs 상한 600000(10분): 그 이상 멈춘 디스크는 사실상 고장이라 녹화기 교체 경로로 넘긴다.
+    GET_CONFIG(int, queueMaxMB, Record::kQueueMaxMB);
+    GET_CONFIG(int, stallToleranceMs, Record::kStallToleranceMs);
+    std::string warning;
+    auto limits = fromSettings(queueMaxMB, stallToleranceMs, &warning);
+    if (!warning.empty()) {
+        // 녹화기 생성마다 반복 출력하지 않도록 원래 설정값 조합이 바뀔 때만 로그.
+        static std::atomic<unsigned long long> warned { ULLONG_MAX };
+        const unsigned long long key = (static_cast<unsigned long long>(static_cast<unsigned>(queueMaxMB)) << 32) | static_cast<unsigned>(stallToleranceMs);
+        if (warned.exchange(key) != key) WarnL << "[recording-queue] config clamped: " << warning;
+    }
+    return limits;
 }
 
 } /* namespace mediakit */

@@ -15,6 +15,7 @@
 #include "Common/MediaSource.h"
 #include "Common/MediaSink.h"
 #include "Record/Recorder.h"
+#include "Record/BoundedRecordWorker.h"
 #include "Rtp/RtpSender.h"
 #include "Record/HlsRecorder.h"
 #include "Record/HlsMediaSource.h"
@@ -153,6 +154,12 @@ public:
      * [AUTO-TRANSLATED:798afa71]
      */
     bool isRecording(Recorder::type type);
+
+    /**
+     * 연속 mp4 녹화기의 쓰기 큐 계측(현재/최고 수위, 최장 디스크 호출, 한도). owner poller 에서 호출.
+     * @return mp4 비동기 녹화기가 있으면 true 와 out 채움, 없으면 false.
+     */
+    bool getRecordQueueStats(BoundedRecordWorker::Stats &out);
 
     /**
      * 开始发送ps-rtp流

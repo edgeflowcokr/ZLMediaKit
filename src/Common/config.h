@@ -514,6 +514,12 @@ extern const std::string kEnableFmp4;
 // startRecord(back_time_ms, forward_time_ms). Actual pre-roll duration = min(this frame cap,
 // rtp_proxy.gop_cache GOPs), so to buffer N seconds both this and gop_cache must be raised.
 extern const std::string kEventPreBufferFrames;
+// mp4 녹화 비동기 쓰기 큐의 녹화기당 바이트 예산(MiB, 기본 96, 범위 [4,256]).
+// Per-recorder byte budget (MiB) of the async MP4 write queue that absorbs storage stalls.
+extern const std::string kQueueMaxMB;
+// 디스크 호출 1회 정지 허용시간(ms, 기본 90000, 범위 [5000,600000]). 이내 정지는 큐 여유가 있는 한 녹화 유지.
+// A single disk call running longer than this fails the recorder; shorter stalls are absorbed by the queue.
+extern const std::string kStallToleranceMs;
 } // namespace Record
 
 // //////////HLS相关配置///////////  [AUTO-TRANSLATED:873cc84c]
