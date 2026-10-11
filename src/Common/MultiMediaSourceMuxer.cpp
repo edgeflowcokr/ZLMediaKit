@@ -424,7 +424,15 @@ bool MultiMediaSourceMuxer::setupRecord(MediaSource &sender, Recorder::type type
                 // Start recording
                 _option.mp4_save_path = custom_path;
                 _option.mp4_max_second = max_second;
-                _mp4 = makeRecorder(type);
+                // 녹화 작업자 상한(BoundedRecordWorker 32)에 닿으면 생성자가 예외를 던진다. 여기서 잡지 않으면 poller 가 예외를
+                //   삼켜 startRecord API 가 응답을 영영 보내지 않았다(.5 2026-10-11 녹화 디스크 포화 분석). 실패로 돌려주고 남긴다.
+                try {
+                    _mp4 = makeRecorder(type);
+                } catch (const std::exception &ex) {
+                    WarnL << "[recording-start] channel=" << _tuple.stream << " failed: " << ex.what();
+                    _mp4 = nullptr;
+                    return false;
+                }
             } else if (!start && _mp4) {
                 // 停止录制  [AUTO-TRANSLATED:3dee9292]
                 // Stop recording
