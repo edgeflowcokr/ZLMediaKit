@@ -326,10 +326,12 @@ bool H264RtpEncoder::inputFrame(const Frame::Ptr &frame) {
     switch (H264_TYPE(ptr[0])) {
         case H264Frame::NAL_SPS: {
             _sps = Frame::getCacheAbleFrame(frame);
+            if (_last_frame && _last_frame->pts() == frame->pts()) _unit_sps = _sps;
             return true;
         }
         case H264Frame::NAL_PPS: {
             _pps = Frame::getCacheAbleFrame(frame);
+            if (_last_frame && _last_frame->pts() == frame->pts()) _unit_pps = _pps;
             return true;
         }
         default: break;
@@ -343,9 +345,22 @@ bool H264RtpEncoder::inputFrame(const Frame::Ptr &frame) {
         inputFrame_l(frame, true);
     } else {
         if (_last_frame) {
-            // 如果时间戳发生了变化，那么markbit才置true  [AUTO-TRANSLATED:19b68429]
-            // If the timestamp changes, then the markbit is set to true
-            inputFrame_l(_last_frame, _last_frame->pts() != frame->pts());
+            if (_last_frame->pts() != frame->pts()) {
+                flushAccessUnit(true);
+            } else if (_pending_frames.size() >= 128 ||
+                       _pending_bytes + _last_frame->size() + frame->size() > 8 * 1024 * 1024) {
+                // An unfinished access unit must not grow without a bound. Emit a
+                // partial unit without an end marker; retain the newest NAL below.
+                WarnL << "H264 access unit cache bound reached, nal_count=" << _pending_frames.size() + 1;
+                flushAccessUnit(false);
+            } else {
+                _pending_bytes += _last_frame->size();
+                _pending_frames.emplace_back(std::move(_last_frame));
+            }
+        }
+        if (!_last_frame && _pending_frames.empty()) {
+            _unit_sps = _sps;
+            _unit_pps = _pps;
         }
         _last_frame = Frame::getCacheAbleFrame(frame);
     }
@@ -353,16 +368,37 @@ bool H264RtpEncoder::inputFrame(const Frame::Ptr &frame) {
 }
 
 void H264RtpEncoder::flush() {
+    flushAccessUnit(true);
+}
+
+void H264RtpEncoder::flushAccessUnit(bool complete) {
+    // Start the GOP before its prefix SEI. Inserting SPS with key_pos after
+    // SEI makes PacketCache flush half of the same access unit prematurely.
+    bool has_key = _last_frame && _last_frame->keyFrame();
+    for (auto &frame : _pending_frames) {
+        has_key = has_key || frame->keyFrame();
+    }
+    if (has_key && _last_frame) {
+        // A new AU may already have supplied its SPS/PPS while this AU was
+        // waiting. Emit this AU's captured configuration, never the newer one.
+        if (_unit_sps) packRtp(_unit_sps->data() + _unit_sps->prefixSize(),
+                              _unit_sps->size() - _unit_sps->prefixSize(), _last_frame->pts(), false, true);
+        if (_unit_pps) packRtp(_unit_pps->data() + _unit_pps->prefixSize(),
+                              _unit_pps->size() - _unit_pps->prefixSize(), _last_frame->pts(), false, false);
+    }
+    for (auto &frame : _pending_frames) {
+        inputFrame_l(frame, false, false);
+    }
+    _pending_frames.clear();
+    _pending_bytes = 0;
     if (_last_frame) {
-        // 如果时间戳发生了变化，那么markbit才置true  [AUTO-TRANSLATED:6b1d0fe0]
-        // If the timestamp changes, then the markbit is set to true
-        inputFrame_l(_last_frame, true);
+        inputFrame_l(_last_frame, complete, false);
         _last_frame = nullptr;
     }
 }
 
-bool H264RtpEncoder::inputFrame_l(const Frame::Ptr &frame, bool is_mark){
-    if (frame->keyFrame()) {
+bool H264RtpEncoder::inputFrame_l(const Frame::Ptr &frame, bool is_mark, bool add_config){
+    if (add_config && frame->keyFrame()) {
         // 保证每一个关键帧前都有SPS与PPS  [AUTO-TRANSLATED:9d1a9d5e]
         // Ensure that there are SPS and PPS before each key frame
         insertConfigFrame(frame->pts());

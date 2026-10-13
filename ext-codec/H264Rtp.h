@@ -15,6 +15,7 @@
 // for DtsGenerator
 #include "Common/Stamp.h"
 #include "Rtsp/RtpCodec.h"
+#include <vector>
 
 namespace mediakit {
 
@@ -95,17 +96,23 @@ public:
 
 private:
     void insertConfigFrame(uint64_t pts);
-    bool inputFrame_l(const Frame::Ptr &frame, bool is_mark);
+    bool inputFrame_l(const Frame::Ptr &frame, bool is_mark, bool add_config = true);
     void packRtp(const char *data, size_t len, uint64_t pts, bool is_mark, bool gop_pos);
     void packRtpFu(const char *data, size_t len, uint64_t pts, bool is_mark, bool gop_pos);
     void packRtpStapA(const char *data, size_t len, uint64_t pts, bool is_mark, bool gop_pos);
     void packRtpSingleNalu(const char *data, size_t len, uint64_t pts, bool is_mark, bool gop_pos);
     void packRtpSmallFrame(const char *data, size_t len, uint64_t pts, bool is_mark, bool gop_pos);
+    void flushAccessUnit(bool complete);
 
 private:
     Frame::Ptr _sps;
     Frame::Ptr _pps;
     Frame::Ptr _last_frame;
+    Frame::Ptr _unit_sps;
+    Frame::Ptr _unit_pps;
+    // Keep SEI and multiple slices with their access unit. Bound malformed equal-PTS input.
+    std::vector<Frame::Ptr> _pending_frames;
+    size_t _pending_bytes = 0;
 };
 
 }//namespace mediakit
