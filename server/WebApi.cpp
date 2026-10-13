@@ -937,6 +937,14 @@ void installWebApi() {
         s_get_api_list(API_ARGS_VALUE);
     });
 
+    // Binary capability, not a configurable ini flag: protect mixed updates.
+    api_regist("/index/api/getManagedFileStamp", [](API_ARGS_MAP) {
+        CHECK_SECRET();
+        Value capability(objectValue);
+        capability["revision"] = "1";
+        val["data"].append(capability);
+    });
+
     // 获取服务器api列表  [AUTO-TRANSLATED:e4c0dd9d]
     // Get server api list
     // 测试url http://127.0.0.1/index/  [AUTO-TRANSLATED:76934dd3]

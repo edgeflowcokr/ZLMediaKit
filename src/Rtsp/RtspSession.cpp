@@ -13,6 +13,7 @@
 #include "Common/config.h"
 #include "UDPServer.h"
 #include "RtspSession.h"
+#include "ManagedFileStamp.h"
 #include "Util/MD5.h"
 #include "Util/base64.h"
 #include "RtpMultiCaster.h"
@@ -274,7 +275,12 @@ void RtspSession::handleReq_ANNOUNCE(const Parser &parser) {
             _push_src = std::make_shared<RtspMediaSourceImp>(_media_info);
             //获取所有权
             _push_src_ownership = _push_src->getOwnership();
-            _push_src->setProtocolOption(option);
+            auto publish_option = option;
+            if (managedFileRelativeStamp(get_peer_ip(), _media_info.app, _media_info.stream, _media_info.params)) {
+                publish_option.modify_stamp = ProtocolOption::kModifyStampRelative;
+                InfoL << "[file-stamp] stream=" << _media_info.stream << " modify_stamp=2 (local managed publisher)";
+            }
+            _push_src->setProtocolOption(publish_option);
             _push_src->setSdp(parser.content());
         }
 
