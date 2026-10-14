@@ -206,6 +206,20 @@ void WebRtcPlayer::onStartWebRTC() {
         return;
     }
     WebRtcTransportImp::onStartWebRTC();
+    attachReader(playSrc);
+}
+
+// EdgeFlow: 최초 재생과 세션 유지 교체(switchSource)가 공유하는 독자 연결
+void WebRtcPlayer::attachReader(const RtspMediaSource::Ptr &playSrc) {
+    for (auto &name : _codec_by_type) {
+        name.clear();
+    }
+    for (auto &track : playSrc->getTracks(true)) {
+        auto type = track->getTrackType();
+        if (type == TrackVideo || type == TrackAudio) {
+            _codec_by_type[type] = track->getCodecName();
+        }
+    }
     if (canSendRtp()) {
         playSrc->pause(false);
         _reader = playSrc->getRing()->attach(getPoller(), true);
@@ -234,13 +248,13 @@ void WebRtcPlayer::onStartWebRTC() {
                     if (TrackVideo == rtp->type && strong_self->_is_h264) {
                         auto rtp_filter = strong_self->_bfilter->processPacket(rtp);
                         if (rtp_filter) {
-                            strong_self->onSendRtp(rtp_filter, ++i == pkt->size());
+                            strong_self->onSendRtp(strong_self->rewriteForContinuity(rtp_filter), ++i == pkt->size());
                         }
                     } else {
-                        strong_self->onSendRtp(rtp, ++i == pkt->size());
+                        strong_self->onSendRtp(strong_self->rewriteForContinuity(rtp), ++i == pkt->size());
                     }
                 } else {
-                    strong_self->onSendRtp(rtp, ++i == pkt->size());
+                    strong_self->onSendRtp(strong_self->rewriteForContinuity(rtp), ++i == pkt->size());
                 }
             });
         });
@@ -270,6 +284,98 @@ void WebRtcPlayer::onStartWebRTC() {
         });
     }
 }
+
+bool WebRtcPlayer::switchSource(const RtspMediaSource::Ptr &src, std::string &err) {
+    if (!src) {
+        err = "source is null";
+        return false;
+    }
+    auto cur = _play_src.lock();
+    if (cur && cur.get() == src.get()) {
+        return true; // 같은 소스 — 할 일 없음
+    }
+    if (!canSendRtp()) {
+        err = "session cannot send rtp";
+        return false;
+    }
+    // 코덱 일치 검사 — 세션의 SDP 는 재협상하지 않으므로 타입별 코덱이 같아야 한다(해상도·프로파일은 in-band SPS 로 처리된다)
+    for (auto &track : src->getTracks(true)) {
+        auto type = track->getTrackType();
+        if (type != TrackVideo && type != TrackAudio) {
+            continue;
+        }
+        auto &negotiated = _codec_by_type[type];
+        if (!negotiated.empty() && strcasecmp(negotiated.c_str(), track->getCodecName()) != 0) {
+            err = std::string("codec mismatch: session ") + negotiated + " vs stream " + track->getCodecName();
+            return false;
+        }
+    }
+    auto old_url = cur ? cur->getUrl() : std::string("(expired)");
+    if (_reader) {
+        _reader->setDetachCB(nullptr); // 독자 교체는 종료가 아니다
+        _reader = nullptr;
+    }
+    for (auto &st : _cont) {
+        if (st.has_last) {
+            st.pending_rebase = true;
+        }
+    }
+    _bfilter = std::make_shared<H264BFrameFilter>();
+    _is_h264 = false;
+    for (auto &track : src->getTracks(true)) {
+        if (track->getTrackType() == TrackVideo) {
+            _is_h264 = track->getCodecId() == CodecH264;
+        }
+    }
+    _play_src = src;
+    auto &tuple = src->getMediaTuple();
+    _media_info.vhost = tuple.vhost;
+    _media_info.app = tuple.app;
+    _media_info.stream = tuple.stream;
+    ++_switch_count;
+    attachReader(src);
+    InfoL << "whep session switched(" << _switch_count << "): " << old_url << " -> " << src->getUrl();
+    return true;
+}
+
+RtpPacket::Ptr WebRtcPlayer::rewriteForContinuity(const RtpPacket::Ptr &rtp) {
+    if (rtp->type != TrackVideo && rtp->type != TrackAudio) {
+        return rtp;
+    }
+    auto &st = _cont[rtp->type];
+    if (st.pending_rebase) {
+        // 교체 뒤 첫 패킷: 이전 마지막 seq+1, 이전 마지막 timestamp + 실제 경과(NTP 차, 20 ms~2 s 로 제한)에 이어 붙인다
+        st.pending_rebase = false;
+        st.rebased = true;
+        st.seq_offset = (uint16_t)((uint16_t)(st.last_seq + 1) - rtp->getSeq());
+        uint32_t rate = rtp->sample_rate ? rtp->sample_rate : 90000;
+        uint64_t gap_ms = (st.last_ntp && rtp->ntp_stamp > st.last_ntp) ? rtp->ntp_stamp - st.last_ntp : 0;
+        uint64_t step = gap_ms * rate / 1000;
+        uint64_t min_step = rate / 50, max_step = (uint64_t)rate * 2;
+        if (step < min_step) step = min_step;
+        if (step > max_step) step = max_step;
+        st.stamp_offset = (uint32_t)(st.last_stamp + (uint32_t)step) - rtp->getStamp();
+    }
+    RtpPacket::Ptr out = rtp;
+    if (st.rebased) {
+        // 링버퍼 패킷은 다른 시청자와 공유되므로 복사본에만 쓴다
+        out = RtpPacket::create();
+        out->assign(rtp->data(), rtp->size());
+        out->type = rtp->type;
+        out->sample_rate = rtp->sample_rate;
+        out->ntp_stamp = rtp->ntp_stamp;
+        out->track_index = rtp->track_index;
+        auto header = out->getHeader();
+        header->seq = htons((uint16_t)(rtp->getSeq() + st.seq_offset));
+        header->stamp = htonl(rtp->getStamp() + st.stamp_offset);
+    }
+    st.last_seq = out->getSeq();
+    st.last_stamp = out->getStamp();
+    st.last_ntp = rtp->ntp_stamp;
+    st.has_last = true;
+    return out;
+}
+
 void WebRtcPlayer::onDestory() {
     auto duration = getDuration();
     auto bytes_usage = getBytesUsage();

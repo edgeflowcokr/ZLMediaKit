@@ -129,6 +129,14 @@ public:
                       WebRtcTransport::Role role, WebRtcTransport::SignalingProtocols signaling_protocols);
     MediaInfo getMediaInfo() { return _media_info; }
 
+    /**
+     * EdgeFlow: 세션 유지 스트림 교체 — PeerConnection·DTLS·SRTP 는 그대로 두고 송출 소스(RtspMediaSource)만 바꾼다.
+     * 새 소스의 RTP 는 seq·timestamp 를 이전 스트림에 이어 붙여 브라우저가 같은 스트림으로 받게 한다.
+     * 소유 poller 스레드에서 호출할 것. 코덱이 협상된 것과 다르면 false 와 err.
+     * docs/LIVE_FAST_CHANNEL_SWITCH_DESIGN.md §4.3
+     */
+    bool switchSource(const RtspMediaSource::Ptr &src, std::string &err);
+
 protected:
     ///////WebRtcTransportImp override///////
     void onStartWebRTC() override;
@@ -139,6 +147,10 @@ private:
     WebRtcPlayer(const toolkit::EventPoller::Ptr &poller, const RtspMediaSource::Ptr &src, const MediaInfo &info);
 
     void sendConfigFrames(const RtpPacket::Ptr &packet);
+    // EdgeFlow: 소스 링버퍼에 독자를 붙인다(최초 재생·교체 공용)
+    void attachReader(const RtspMediaSource::Ptr &playSrc);
+    // EdgeFlow: 교체 뒤 새 소스의 RTP seq·timestamp 를 이전 스트림에 이어 붙인다(필요할 때만 복사본을 만든다)
+    RtpPacket::Ptr rewriteForContinuity(const RtpPacket::Ptr &rtp);
 
 private:
     // 媒体相关元数据  [AUTO-TRANSLATED:f4cf8045]
@@ -159,6 +171,22 @@ private:
     bool _is_h264 { false };
     bool _bfliter_flag { false };
     std::shared_ptr<H264BFrameFilter> _bfilter;
+
+    // EdgeFlow: 트랙 타입별(0=video,1=audio) 송출 연속성 상태
+    struct Continuity {
+        bool has_last = false;      // 이 타입으로 보낸 패킷이 있는지
+        bool pending_rebase = false; // 교체 직후 — 다음 패킷에서 오프셋을 계산한다
+        bool rebased = false;       // 오프셋 적용 중(교체 뒤 모든 패킷을 복사·재작성)
+        uint16_t last_seq = 0;
+        uint32_t last_stamp = 0;
+        uint64_t last_ntp = 0;
+        uint16_t seq_offset = 0;
+        uint32_t stamp_offset = 0;
+    };
+    Continuity _cont[2];
+    // 교체 시 코덱 일치 검사용 — 현재 소스의 트랙 타입별 코덱 이름(협상된 코덱과 같다)
+    std::string _codec_by_type[2];
+    uint32_t _switch_count { 0 };
 };
 
 }// namespace mediakit

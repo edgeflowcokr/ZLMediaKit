@@ -2390,6 +2390,8 @@ void installWebApi() {
                 // Set return type
                 headerOut["Content-Type"] = "application/sdp";
                 headerOut["Location"] = location + "?" + delete_args.make();
+                // EdgeFlow: 브라우저가 다른 출처(웹 9080 → 미디어 80)에서도 세션 URL 을 읽어 DELETE·switch_webrtc 를 보낼 수 있게 노출한다
+                headerOut["Access-Control-Expose-Headers"] = "Location";
                 invoker(201, headerOut, handler.getAnswerSdp(offer));
             } catch (std::exception &ex) {
                 headerOut["Content-Type"] = "text/plain";
@@ -2415,6 +2417,57 @@ void installWebApi() {
         }
         obj->safeShutdown(SockException(Err_shutdown, "deleted by http api"));
         invoker(200, headerOut, "");
+    });
+
+    // EdgeFlow: WHEP 세션 유지 스트림 교체 — 같은 PeerConnection 에서 송출 소스만 바꾼다(docs/LIVE_FAST_CHANNEL_SWITCH_DESIGN.md §4.3).
+    // 인증은 delete_webrtc 와 같이 세션 id + token(WHEP 응답 Location 으로만 전달되는 비밀값)으로 한다.
+    api_regist("/index/api/switch_webrtc", [](API_ARGS_MAP_ASYNC) {
+        CHECK_ARGS("id", "token", "app", "stream");
+        headerOut["Content-Type"] = "application/json";
+        auto reply = [invoker, headerOut](int http_code, int code, const string &msg) mutable {
+            Json::Value val;
+            val["code"] = code;
+            val["msg"] = msg;
+            invoker(http_code, headerOut, val.toStyledString());
+        };
+        auto obj = WebRtcTransportManager::Instance().getItem(allArgs["id"]);
+        if (!obj) {
+            reply(404, API::NotFound, "id not found");
+            return;
+        }
+        if (obj->deleteRandStr() != allArgs["token"]) {
+            reply(401, API::AuthFailed, "token incorrect");
+            return;
+        }
+        auto player = dynamic_pointer_cast<WebRtcPlayer>(obj);
+        if (!player) {
+            reply(400, API::InvalidArgs, "not a whep player session");
+            return;
+        }
+        MediaInfo info;
+        info.schema = RTSP_SCHEMA;
+        std::string vhost = allArgs["vhost"];
+        info.vhost = vhost.empty() ? std::string(DEFAULT_VHOST) : vhost;
+        info.app = std::string(allArgs["app"]);
+        info.stream = std::string(allArgs["stream"]);
+        auto session_ptr = static_pointer_cast<Session>(static_cast<Session &>(sender).shared_from_this());
+        MediaSource::findAsync(info, session_ptr, [player, reply](const MediaSource::Ptr &src_in) mutable {
+            auto src = dynamic_pointer_cast<RtspMediaSource>(src_in);
+            if (!src) {
+                reply(404, API::NotFound, "stream not found");
+                return;
+            }
+            // 교체는 플레이어 소유 poller 에서 — 독자 교체·연속성 상태가 송출 스레드와 같은 곳에서 바뀌어야 한다
+            player->getPoller()->async([player, src, reply]() mutable {
+                string err;
+                if (player->switchSource(src, err)) {
+                    reply(200, API::Success, "");
+                } else {
+                    WarnL << "switch_webrtc rejected: " << err << ", session " << player->getIdentifier();
+                    reply(409, API::OtherFailed, err);
+                }
+            });
+        });
     });
 
     // 获取WebRTCProxyPlayer 连接信息
