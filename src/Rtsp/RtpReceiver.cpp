@@ -24,6 +24,7 @@ uint32_t RtpTrack::getSSRC() const {
 }
 
 void RtpTrack::clear() {
+    _ntp_stamp.resetContinuousAnchor();
     _ssrc = 0;
     _ssrc_alive.resetTime();
     PacketSortor<RtpPacket::Ptr>::clear();
@@ -84,6 +85,7 @@ RtpPacket::Ptr RtpTrack::inputRtp(TrackType type, int sample_rate, uint8_t *ptr,
             return nullptr;
         }
         InfoL << "rtp ssrc changed:" << _ssrc << " -> " << ssrc;
+        _ntp_stamp.resetContinuousAnchor();
         _ssrc = ssrc;
         _ssrc_alive.resetTime();
     }
@@ -120,10 +122,11 @@ RtpPacket::Ptr RtpTrack::inputRtp(TrackType type, int sample_rate, uint8_t *ptr,
     return rtp;
 }
 
-void RtpTrack::setNtpStamp(uint32_t rtp_stamp, uint64_t ntp_stamp_ms) {
+void RtpTrack::setNtpStamp(uint32_t rtp_stamp, uint64_t ntp_stamp_ms, bool continuous) {
     _disable_ntp = rtp_stamp == 0 && ntp_stamp_ms == 0;
     if (!_disable_ntp) {
-        _ntp_stamp.setNtpStamp(rtp_stamp, ntp_stamp_ms);
+        if (continuous) _ntp_stamp.setNtpStampContinuous(rtp_stamp, ntp_stamp_ms);
+        else _ntp_stamp.setNtpStamp(rtp_stamp, ntp_stamp_ms);
     }
 }
 

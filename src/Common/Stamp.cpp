@@ -366,6 +366,46 @@ void NtpStamp::setNtpStamp(uint32_t rtp_stamp, uint64_t ntp_stamp_ms) {
         return;
     }
     update(rtp_stamp, ntp_stamp_ms * 1000);
+    _continuous_anchor = false;
+    _last_sr_ntp_ms = 0;
+    _pending_phase_us = 0;
+    _slew_remainder = 0;
+    _phase_warning_emitted = false;
+}
+
+void NtpStamp::setNtpStampContinuous(uint32_t rtp_stamp, uint64_t ntp_stamp_ms) {
+    if (!rtp_stamp || !ntp_stamp_ms || ntp_stamp_ms > uint64_t(INT64_MAX) / 1000) return;
+    if (!_continuous_anchor || !_sample_rate || !_last_ntp_stamp_us) {
+        setNtpStamp(rtp_stamp, ntp_stamp_ms);
+        _continuous_anchor = true;
+        _last_sr_ntp_ms = ntp_stamp_ms;
+        _last_sr_rtp_stamp = rtp_stamp;
+        return;
+    }
+    // Delayed/duplicate SRs cannot move the established live clock backwards.
+    if (ntp_stamp_ms <= _last_sr_ntp_ms) return;
+    const auto report_ticks = static_cast<int32_t>(rtp_stamp - _last_sr_rtp_stamp);
+    if (report_ticks <= 0) return;
+    const auto delta_ticks = static_cast<int32_t>(rtp_stamp - _last_rtp_stamp);
+    const auto delta_ms = int64_t(delta_ticks) * 1000 / _sample_rate;
+    if (delta_ms <= -MAX_DELTA_STAMP || delta_ms >= MAX_DELTA_STAMP) return;
+
+    // Predict the report's RTP instant without advancing the live packet clock.
+    auto prediction = *this;
+    prediction._pending_phase_us = 0;
+    const auto predicted_us = prediction.getNtpStampUS(rtp_stamp, _sample_rate);
+    const auto error_us = int64_t(ntp_stamp_ms * 1000) - int64_t(predicted_us);
+    if (!_phase_warning_emitted && (error_us > 100000 || error_us < -100000)) {
+        WarnL << "Live RTSP sender-report phase disagreement: " << error_us / 1000
+              << " ms; keep packet clock continuous and slew phase";
+        _phase_warning_emitted = true;
+    }
+    // Never rebase the live packet clock when an SR arrives. Pay down the
+    // phase error over subsequent advancing RTP instants, including audio and
+    // sub-millisecond cadence; duplicate/reordered packets have no slew budget.
+    _pending_phase_us = error_us;
+    _last_sr_ntp_ms = ntp_stamp_ms;
+    _last_sr_rtp_stamp = rtp_stamp;
 }
 
 void NtpStamp::update(uint32_t rtp_stamp, uint64_t ntp_stamp_us) {
@@ -374,6 +414,7 @@ void NtpStamp::update(uint32_t rtp_stamp, uint64_t ntp_stamp_us) {
 }
 
 uint64_t NtpStamp::getNtpStamp(uint32_t rtp_stamp, uint32_t sample_rate) {
+    if (sample_rate) _sample_rate = sample_rate;
     if (rtp_stamp == _last_rtp_stamp) {
         return _last_ntp_stamp_us / 1000;
     }
@@ -390,11 +431,23 @@ uint64_t NtpStamp::getNtpStampUS(uint32_t rtp_stamp, uint32_t sample_rate) {
     // rtp时间戳正增长  [AUTO-TRANSLATED:4d3c87d1]
     // The rtp timestamp is increasing
     if (rtp_stamp >= _last_rtp_stamp) {
-        auto diff_us = static_cast<int64_t>((rtp_stamp - _last_rtp_stamp) / (sample_rate / 1000000.0f));
+        // Keep legacy/VOD conversion unchanged. Only the continuous live clock
+        // needs exact integer ticks so short cadence does not consume its slew.
+        auto diff_us = _continuous_anchor
+            ? static_cast<int64_t>(uint64_t(rtp_stamp - _last_rtp_stamp) * 1000000 / sample_rate)
+            : static_cast<int64_t>((rtp_stamp - _last_rtp_stamp) / (sample_rate / 1000000.0f));
         if (diff_us < MAX_DELTA_STAMP * 1000) {
             // 时间戳正常增长  [AUTO-TRANSLATED:db60e84a]
             // The timestamp is increasing normally
-            update(rtp_stamp, _last_ntp_stamp_us + diff_us);
+            int64_t correction_us = 0;
+            if (_continuous_anchor && _pending_phase_us && diff_us > 0) {
+                const auto elapsed = uint64_t(diff_us) + _slew_remainder;
+                const auto budget = (std::min)(int64_t(elapsed / 1000), diff_us);
+                _slew_remainder = elapsed % 1000;
+                correction_us = _pending_phase_us > budget ? budget : _pending_phase_us < -budget ? -budget : _pending_phase_us;
+                _pending_phase_us -= correction_us;
+            }
+            update(rtp_stamp, uint64_t(int64_t(_last_ntp_stamp_us) + diff_us + correction_us));
             return _last_ntp_stamp_us;
         }
 
@@ -416,7 +469,9 @@ uint64_t NtpStamp::getNtpStampUS(uint32_t rtp_stamp, uint32_t sample_rate) {
 
     // rtp时间戳负增长  [AUTO-TRANSLATED:54a7f797]
     // The rtp timestamp is decreasing
-    auto diff_us = static_cast<int64_t>((_last_rtp_stamp - rtp_stamp) / (sample_rate / 1000000.0f));
+    auto diff_us = _continuous_anchor
+        ? static_cast<int64_t>(uint64_t(_last_rtp_stamp - rtp_stamp) * 1000000 / sample_rate)
+        : static_cast<int64_t>((_last_rtp_stamp - rtp_stamp) / (sample_rate / 1000000.0f));
     if (diff_us < MAX_DELTA_STAMP * 1000) {
         // 正常范围的时间戳回退，说明收到rtp乱序了  [AUTO-TRANSLATED:f691d5bf]
         // The timestamp retreats within the normal range, indicating that the rtp is out of order

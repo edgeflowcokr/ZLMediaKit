@@ -657,7 +657,9 @@ void RtspPlayer::onRtcpPacket(int track_idx, SdpTrack::Ptr &track, uint8_t *data
             auto sr = (RtcpSR *)(rtcp);
             // 设置rtp时间戳与ntp时间戳的对应关系  [AUTO-TRANSLATED:e92f4749]
             // Set the correspondence between RTP timestamp and NTP timestamp
-            setNtpStamp(track_idx, sr->rtpts, sr->getNtpUnixStampMS());
+            // Only live RTSP reception slews an established SR anchor. Playback
+            // (including seek) and other RTP users retain exact report mapping.
+            setNtpStamp(track_idx, sr->rtpts, sr->getNtpUnixStampMS(), getDuration() <= 0);
         }
     }
 }

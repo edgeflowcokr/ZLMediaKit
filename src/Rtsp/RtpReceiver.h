@@ -254,7 +254,7 @@ public:
     void clear();
     uint32_t getSSRC() const;
     RtpPacket::Ptr inputRtp(TrackType type, int sample_rate, uint8_t *ptr, size_t len);
-    void setNtpStamp(uint32_t rtp_stamp, uint64_t ntp_stamp_ms);
+    void setNtpStamp(uint32_t rtp_stamp, uint64_t ntp_stamp_ms, bool continuous = false);
     void setPayloadType(uint8_t pt);
 
 protected:
@@ -341,9 +341,9 @@ public:
      
      * [AUTO-TRANSLATED:1e50904e]
      */
-    void setNtpStamp(int index, uint32_t rtp_stamp, uint64_t ntp_stamp_ms) {
+    void setNtpStamp(int index, uint32_t rtp_stamp, uint64_t ntp_stamp_ms, bool continuous = false) {
         assert(index < kCount && index >= 0);
-        _track[index].setNtpStamp(rtp_stamp, ntp_stamp_ms);
+        _track[index].setNtpStamp(rtp_stamp, ntp_stamp_ms, continuous);
     }
 
     void setPayloadType(int index, uint8_t pt){

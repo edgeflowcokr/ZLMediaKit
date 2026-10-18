@@ -184,6 +184,10 @@ private:
 class NtpStamp {
 public:
     void setNtpStamp(uint32_t rtp_stamp, uint64_t ntp_stamp_ms);
+    // Established live RTSP clocks must not jump on coarse/inconsistent SRs.
+    // The first anchor and the legacy/VOD entry point retain their semantics.
+    void setNtpStampContinuous(uint32_t rtp_stamp, uint64_t ntp_stamp_ms);
+    void resetContinuousAnchor() { if (_continuous_anchor) *this = NtpStamp(); }
     uint64_t getNtpStamp(uint32_t rtp_stamp, uint32_t sample_rate);
 
 private:
@@ -193,6 +197,13 @@ private:
 private:
     uint32_t _last_rtp_stamp = 0;
     uint64_t _last_ntp_stamp_us = 0;
+    uint32_t _sample_rate = 0;
+    uint64_t _last_sr_ntp_ms = 0;
+    uint32_t _last_sr_rtp_stamp = 0;
+    bool _continuous_anchor = false;
+    int64_t _pending_phase_us = 0;
+    uint32_t _slew_remainder = 0;
+    bool _phase_warning_emitted = false;
 };
 
 }//namespace mediakit
