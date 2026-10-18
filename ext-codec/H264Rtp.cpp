@@ -10,6 +10,7 @@
 
 #include "H264Rtp.h"
 #include "Common/config.h"
+#include <limits>
 
 namespace mediakit{
 
@@ -323,7 +324,14 @@ void H264RtpEncoder::packRtpSingleNalu(const char *data, size_t len, uint64_t pt
 
 bool H264RtpEncoder::inputFrame(const Frame::Ptr &frame) {
     auto ptr = frame->data() + frame->prefixSize();
-    switch (H264_TYPE(ptr[0])) {
+    const auto type = H264_TYPE(ptr[0]);
+    // A parameter set after a picture belongs to the next access unit. Equal
+    // input timestamps must not overwrite the previous unit's configuration.
+    if ((type == H264Frame::NAL_SPS || type == H264Frame::NAL_PPS)
+        && _unit_has_vcl && _last_frame && _last_frame->pts() == frame->pts()) {
+        flushAccessUnit(true);
+    }
+    switch (type) {
         case H264Frame::NAL_SPS: {
             _sps = Frame::getCacheAbleFrame(frame);
             if (_last_frame && _last_frame->pts() == frame->pts()) _unit_sps = _sps;
@@ -345,7 +353,13 @@ bool H264RtpEncoder::inputFrame(const Frame::Ptr &frame) {
         inputFrame_l(frame, true);
     } else {
         if (_last_frame) {
-            if (_last_frame->pts() != frame->pts()) {
+            // Timestamp equality is not picture equality: some live sources
+            // repeat PTS for distinct pictures. Preserve additional slices, but
+            // close a picture before the next first_mb_in_slice=0 / AUD.
+            const bool first_slice = (type == 1 || type == 2 || type == 5)
+                && frame->size() > frame->prefixSize() + 1 && (ptr[1] & 0x80);
+            if (_last_frame->pts() != frame->pts()
+                || (_unit_has_vcl && (first_slice || type == H264Frame::NAL_AUD))) {
                 flushAccessUnit(true);
             } else if (_pending_frames.size() >= 128 ||
                        _pending_bytes + _last_frame->size() + frame->size() > 8 * 1024 * 1024) {
@@ -358,13 +372,31 @@ bool H264RtpEncoder::inputFrame(const Frame::Ptr &frame) {
                 _pending_frames.emplace_back(std::move(_last_frame));
             }
         }
-        if (!_last_frame && _pending_frames.empty()) {
+        if (!_unit_active) {
+            startAccessUnit(frame->pts());
             _unit_sps = _sps;
             _unit_pps = _pps;
         }
+        _unit_has_vcl = _unit_has_vcl || (type >= 1 && type <= 5);
         _last_frame = Frame::getCacheAbleFrame(frame);
     }
     return true;
+}
+
+void H264RtpEncoder::startAccessUnit(uint64_t pts) {
+    _unit_rtp_pts = pts;
+    // Distinct pictures also need distinct RTP timestamps. Repair collisions
+    // with the smallest millisecond step; normal cadence and genuine reordered
+    // (e.g. B-picture) timestamps remain unchanged. Do not use arrival wall time.
+    if (_have_output_pts && pts >= _last_input_pts && pts <= _last_output_pts
+        && _last_output_pts < (std::numeric_limits<uint64_t>::max)()) {
+        _unit_rtp_pts = _last_output_pts + 1;
+    }
+    _last_input_pts = pts;
+    _last_output_pts = _unit_rtp_pts;
+    _have_output_pts = true;
+    _unit_active = true;
+    _unit_has_vcl = false;
 }
 
 void H264RtpEncoder::flush() {
@@ -382,9 +414,9 @@ void H264RtpEncoder::flushAccessUnit(bool complete) {
         // A new AU may already have supplied its SPS/PPS while this AU was
         // waiting. Emit this AU's captured configuration, never the newer one.
         if (_unit_sps) packRtp(_unit_sps->data() + _unit_sps->prefixSize(),
-                              _unit_sps->size() - _unit_sps->prefixSize(), _last_frame->pts(), false, true);
+                              _unit_sps->size() - _unit_sps->prefixSize(), _unit_rtp_pts, false, true);
         if (_unit_pps) packRtp(_unit_pps->data() + _unit_pps->prefixSize(),
-                              _unit_pps->size() - _unit_pps->prefixSize(), _last_frame->pts(), false, false);
+                              _unit_pps->size() - _unit_pps->prefixSize(), _unit_rtp_pts, false, false);
     }
     for (auto &frame : _pending_frames) {
         inputFrame_l(frame, false, false);
@@ -395,6 +427,10 @@ void H264RtpEncoder::flushAccessUnit(bool complete) {
         inputFrame_l(_last_frame, complete, false);
         _last_frame = nullptr;
     }
+    if (complete) {
+        _unit_active = false;
+        _unit_has_vcl = false;
+    }
 }
 
 bool H264RtpEncoder::inputFrame_l(const Frame::Ptr &frame, bool is_mark, bool add_config){
@@ -403,7 +439,8 @@ bool H264RtpEncoder::inputFrame_l(const Frame::Ptr &frame, bool is_mark, bool ad
         // Ensure that there are SPS and PPS before each key frame
         insertConfigFrame(frame->pts());
     }
-    packRtp(frame->data() + frame->prefixSize(), frame->size() - frame->prefixSize(), frame->pts(), is_mark, false);
+    packRtp(frame->data() + frame->prefixSize(), frame->size() - frame->prefixSize(),
+            _unit_active ? _unit_rtp_pts : frame->pts(), is_mark, false);
     return true;
 }
 

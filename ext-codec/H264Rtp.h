@@ -103,6 +103,7 @@ private:
     void packRtpSingleNalu(const char *data, size_t len, uint64_t pts, bool is_mark, bool gop_pos);
     void packRtpSmallFrame(const char *data, size_t len, uint64_t pts, bool is_mark, bool gop_pos);
     void flushAccessUnit(bool complete);
+    void startAccessUnit(uint64_t pts);
 
 private:
     Frame::Ptr _sps;
@@ -113,6 +114,12 @@ private:
     // Keep SEI and multiple slices with their access unit. Bound malformed equal-PTS input.
     std::vector<Frame::Ptr> _pending_frames;
     size_t _pending_bytes = 0;
+    bool _unit_active = false;
+    bool _unit_has_vcl = false;
+    bool _have_output_pts = false;
+    uint64_t _unit_rtp_pts = 0;
+    uint64_t _last_input_pts = 0;
+    uint64_t _last_output_pts = 0;
 };
 
 }//namespace mediakit
