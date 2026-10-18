@@ -126,7 +126,8 @@ bool MP4MuxerInterface::inputFrame(const Frame::Ptr &frame) {
 
     // fmp4封装超过一定I帧间隔，强制刷新segment，防止内存上涨  [AUTO-TRANSLATED:0be6ef15]
     // fmp4 encapsulation exceeds a certain I-frame interval, force refresh segment to prevent memory increase
-    if (frame->getTrackType() == TrackVideo && _mov_writter->fmp4) {
+    if (frame->getTrackType() == TrackVideo && _mov_writter->fmp4
+        && !singleH264SampleLookahead(frame->getCodecId())) {
         if (frame->keyFrame()) {
             _non_iframe_video_count = 0;
         } else {
@@ -148,7 +149,8 @@ bool MP4MuxerInterface::inputFrame(const Frame::Ptr &frame) {
             // 这里的代码逻辑是让SPS、PPS、IDR这些时间戳相同的帧打包到一起当做一个帧处理，  [AUTO-TRANSLATED:edf57c32]
             // The code logic here is to package frames with the same timestamp, such as SPS, PPS, and IDR, as one frame,
             const bool h264 = frame->getCodecId() == CodecH264;
-            track.merger.inputFrame(frame, [this, &track, h264](uint64_t dts, uint64_t pts, const Buffer::Ptr &buffer, bool have_idr) {
+            const bool lookahead = singleH264SampleLookahead(frame->getCodecId());
+            track.merger.inputFrame(frame, [this, &track, h264, lookahead](uint64_t dts, uint64_t pts, const Buffer::Ptr &buffer, bool have_idr) {
                 int64_t dts_out, pts_out;
                 track.stamp.revise(dts, pts, dts_out, pts_out);
                 if (h264) {
@@ -170,7 +172,15 @@ bool MP4MuxerInterface::inputFrame(const Frame::Ptr &frame) {
                         }
                     }
                 }
-                mp4_writer_write(_mov_writter.get(), track.track_id, buffer->data(), buffer->size(), pts_out, dts_out, have_idr ? MOV_AV_FLAG_KEYFREAME : 0);
+                // fmp4_writer_write updates the previous sample's terminal
+                // duration from this next DTS before FORCE flushes it. Flushing
+                // in inputFrame before this call instead guessed that duration
+                // from the preceding interval, making holes/overlaps at every
+                // change in cadence even when all sample bytes were intact.
+                const auto flags = (have_idr ? MOV_AV_FLAG_KEYFREAME : 0)
+                    | (lookahead ? MOV_AV_FLAG_SEGMENT_FORCE : 0);
+                mp4_writer_write(_mov_writter.get(), track.track_id, buffer->data(), buffer->size(), pts_out, dts_out, flags);
+                if (lookahead) onLookaheadSampleMuxed(uint64_t(dts_out), have_idr);
             });
             break;
         }
@@ -274,6 +284,8 @@ void MP4MuxerMemory::resetTracks() {
     MP4MuxerInterface::resetTracks();
     _memory_file = std::make_shared<MP4FileMemory>();
     _init_segment.clear();
+    _key_frame = false;
+    _last_dst = 0;
 }
 
 bool MP4MuxerMemory::inputFrame(const Frame::Ptr &frame) {
@@ -281,6 +293,10 @@ bool MP4MuxerMemory::inputFrame(const Frame::Ptr &frame) {
         // 尚未生成init segment  [AUTO-TRANSLATED:b4baa65f]
         // Init segment has not been generated yet
         return false;
+    }
+
+    if (singleH264SampleLookahead(frame->getCodecId())) {
+        return MP4MuxerInterface::inputFrame(frame);
     }
 
     // flush切片  [AUTO-TRANSLATED:c4358dce]
@@ -303,6 +319,15 @@ bool MP4MuxerMemory::inputFrame(const Frame::Ptr &frame) {
         _last_dst = frame->dts();
     }
     return MP4MuxerInterface::inputFrame(frame);
+}
+
+void MP4MuxerMemory::onLookaheadSampleMuxed(uint64_t dts, bool key_frame) {
+    // The completed segment belongs to the previous merged picture, not the
+    // newly queued one. Preserve that picture's GOP marker and timestamp.
+    auto data = _memory_file->getAndClearMemory();
+    if (!data.empty()) onSegmentData(std::move(data), _last_dst, _key_frame);
+    _last_dst = dts;
+    _key_frame = key_frame;
 }
 
 } // namespace mediakit

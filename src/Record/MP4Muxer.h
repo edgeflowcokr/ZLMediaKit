@@ -95,6 +95,13 @@ public:
 
 protected:
     virtual MP4FileIO::Writer createWriter() = 0;
+    // Only the live HTTP fMP4 source opts in. Disk/HLS and multi-track A/V
+    // retain their existing fragment policy.
+    void setSingleH264SampleLookahead(bool enabled) { _single_h264_sample_lookahead = enabled; }
+    bool singleH264SampleLookahead(CodecId codec) const {
+        return _single_h264_sample_lookahead && _tracks.size() == 1 && codec == CodecH264;
+    }
+    virtual void onLookaheadSampleMuxed(uint64_t dts, bool key_frame) {}
 
 private:
     void stampSync();
@@ -102,6 +109,7 @@ private:
 private:
     bool _started = false;
     bool _have_video = false;
+    bool _single_h264_sample_lookahead = false;
     MP4FileIO::Writer _mov_writter;
     int _non_iframe_video_count; // 非I帧个数
 
@@ -204,6 +212,8 @@ protected:
 
 protected:
     MP4FileIO::Writer createWriter() override;
+
+    void onLookaheadSampleMuxed(uint64_t dts, bool key_frame) override;
 
 private:
     bool _key_frame = false;

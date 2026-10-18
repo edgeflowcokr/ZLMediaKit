@@ -23,6 +23,7 @@ public:
 
     FMP4MediaSourceMuxer(const MediaTuple& tuple, const ProtocolOption &option) {
         _option = option;
+        setSingleH264SampleLookahead(true);
         _media_src = std::make_shared<FMP4MediaSource>(tuple);
     }
 
