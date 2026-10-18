@@ -15,6 +15,7 @@
 #include "Common/strCoding.h"
 #include "HttpSession.h"
 #include "HttpConst.h"
+#include "FMP4/HttpFmp4Timeline.h"
 #include "Util/base64.h"
 #include "Util/SHA1.h"
 
@@ -453,6 +454,10 @@ bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
         // 直播牺牲延时提升发送性能  [AUTO-TRANSLATED:7c6616c9]
         // Live streaming sacrifices delay to improve sending performance
         setSocketFlags();
+        auto timeline = std::make_shared<HttpFmp4Timeline>();
+        auto timeline_failed = std::make_shared<bool>(false);
+        const bool local_epoch = timeline->configure(fmp4_src->getInitSegment());
+        DebugP(this) << "HTTP fMP4 connection timeline: " << (local_epoch ? "single-video local epoch" : "legacy multi-track/unsupported init");
         onWrite(std::make_shared<BufferString>(fmp4_src->getInitSegment()), true);
         weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
         fmp4_src->pause(false);
@@ -471,16 +476,32 @@ bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
             }
             strong_self->shutdown(SockException(Err_shutdown, "fmp4 ring buffer detached"));
         });
-        _fmp4_reader->setReadCB([weak_self](const FMP4MediaSource::RingDataType &fmp4_list) {
+        _fmp4_reader->setReadCB([weak_self, timeline, timeline_failed](const FMP4MediaSource::RingDataType &fmp4_list) {
             auto strong_self = weak_self.lock();
             if (!strong_self) {
                 // 本对象已经销毁  [AUTO-TRANSLATED:713e0f23]
                 // This object has been destroyed
                 return;
             }
+            if (*timeline_failed) return;
             size_t i = 0;
             auto size = fmp4_list->size();
-            fmp4_list->for_each([&](const FMP4Packet::Ptr &ts) { strong_self->onWrite(ts, ++i == size); });
+            fmp4_list->for_each([&](const FMP4Packet::Ptr &packet) {
+                if (*timeline_failed) return;
+                if (!timeline->active()) {
+                    strong_self->onWrite(packet, ++i == size);
+                    return;
+                }
+                std::string translated;
+                if (packet->size() > 32 * 1024 * 1024 || !timeline->translate(packet->toString(), translated)) {
+                    *timeline_failed = true;
+                    WarnP(strong_self) << "HTTP fMP4 connection timeline rejected malformed or regressing fragment"
+                                      << ", bytes=" << packet->size() << ", base=" << timeline->base();
+                    strong_self->shutdown(SockException(Err_shutdown, "fmp4 connection timeline discontinuity"));
+                    return;
+                }
+                strong_self->onWrite(std::make_shared<BufferString>(std::move(translated)), ++i == size);
+            });
         });
     });
 }
