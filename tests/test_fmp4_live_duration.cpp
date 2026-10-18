@@ -1,4 +1,6 @@
 #include "Record/MP4Muxer.h"
+#include "FMP4/FMP4MediaSourceMuxer.h"
+#include "Poller/EventPoller.h"
 #include "ext-codec/H264.h"
 #include "ext-codec/AAC.h"
 #include "Util/base64.h"
@@ -35,6 +37,68 @@ static Frame::Ptr nal(uint64_t stamp,bool key) {
 static Track::Ptr video() { auto t=std::make_shared<H264Track>(decodeBase64("Z00AM4qKUDwBE/Kg"),decodeBase64("aO48gA=="),0,0);t->setIndex(0);return t; }
 static int failures=0;
 static void check(bool ok,const char *name){std::cout<<name<<" result="<<(ok?"PASS":"FAIL")<<'\n';failures+=!ok;}
+struct DemandEvents : MediaSourceEvent {
+    EventPoller::Ptr poller;
+    explicit DemandEvents(EventPoller::Ptr p) : poller(std::move(p)) {}
+    EventPoller::Ptr getOwnerPoller(MediaSource &) override { return poller; }
+    void onReaderChanged(MediaSource &,int) override {}
+};
+static void demandReordering() {
+    EventPollerPool::setPoolSize(1);
+    auto poller=EventPollerPool::Instance().getPoller();
+    auto events=std::make_shared<DemandEvents>(poller);
+    ProtocolOption option; option.fmp4_demand=true;
+    auto mux=std::make_shared<FMP4MediaSourceMuxer>(MediaTuple{"__defaultVhost__","demand-test","local-only",""},option);
+    mux->setListener(events);
+    poller->sync([&] {
+        check(mux->addTrack(video()),"real_fmp4_demand_fixture_has_ready_video"); mux->addTrackCompleted();
+        auto source=std::dynamic_pointer_cast<FMP4MediaSource>(mux->getMediaSource());
+        check(!source->getInitSegment().empty(),"real_fmp4_demand_fixture_has_init_segment");
+        auto reader=source->getRing()->attach(poller,false);
+        reader->setReadCB([](const FMP4MediaSource::RingDataType &){});
+        check(source->readerCount()==1,"real_fmp4_ring_reader_attaches");
+        // 이미 새 독자가 붙은 뒤에 옛 0명 알림을 의도적으로 전달한다.
+        mux->onReaderChanged(*source,0);
+        check(mux->inputFrame(nal(1000,true)),"stale_zero_notification_does_not_stop_active_fmp4_input");
+        mux->onReaderChanged(*source,1);
+        check(mux->inputFrame(nal(1040,true)),"current_reader_keeps_fmp4_input_enabled");
+        mux->inputFrame(nal(1080,false)); mux->inputFrame(nal(1120,false));
+        auto cached=[&] {size_t n=0;source->getRing()->flushGop([&](const FMP4MediaSource::RingDataType &list){n+=list->size();});return n;};
+        const auto before=cached();
+        check(before>0,"actual_mux_emits_fmp4_fragments_to_ring");
+        mux->onReaderChanged(*source,0);
+        check(mux->inputFrame(nal(1160,false))&&cached()>=before,"stale_zero_keeps_active_gop_and_fragment_output");
+        auto reader2=source->getRing()->attach(poller,false);
+        reader2->setReadCB([](const FMP4MediaSource::RingDataType &){});
+        check(source->readerCount()==2,"second_actual_reader_attaches");
+        mux->onReaderChanged(*source,1);
+        check(mux->inputFrame(nal(1200,false)),"stale_count_one_keeps_two_readers_enabled");
+        reader2.reset();
+        mux->onReaderChanged(*source,0);
+        check(source->readerCount()==1&&mux->inputFrame(nal(1240,false)),"one_remaining_reader_survives_old_zero");
+        reader.reset();
+        check(source->readerCount()==0,"real_fmp4_ring_reader_detaches");
+        // 마지막 독자가 떠난 뒤에 옛 1명 알림이 와도 불필요하게 켜지면 안 된다.
+        mux->onReaderChanged(*source,1);
+        check(!mux->inputFrame(nal(1080,true)),"stale_one_notification_does_not_enable_readerless_mux");
+        auto replacement=source->getRing()->attach(poller,false);
+        replacement->setReadCB([](const FMP4MediaSource::RingDataType &){});
+        mux->onReaderChanged(*source,0);
+        check(mux->inputFrame(nal(1280,true)),"replacement_reader_recovers_after_actual_zero");
+        replacement.reset();
+    });
+    poller->sync([&] { mux.reset(); });
+    option.fmp4_demand=false;
+    auto always=std::make_shared<FMP4MediaSourceMuxer>(MediaTuple{"__defaultVhost__","demand-test","always-on",""},option);
+    always->setListener(events);
+    poller->sync([&] {
+        always->addTrack(video()); always->addTrackCompleted();
+        auto source=always->getMediaSource();
+        always->onReaderChanged(*source,0);
+        check(always->inputFrame(nal(1000,true)),"demand_disabled_policy_is_unchanged");
+        always.reset();
+    });
+}
 static void run(const std::vector<uint64_t> &stamps,const char *name,size_t key_interval=4) {
     LiveCapture live(true);live.addTrack(video());live.getInitSegment();
     // Nonzero source epoch avoids DeltaStamp's legacy zero-as-uninitialized
@@ -50,6 +114,7 @@ static void run(const std::vector<uint64_t> &stamps,const char *name,size_t key_
     check(exact,name);check(markers,"completed_segment_keeps_previous_picture_gop_marker");check(metadata,"completed_segment_stamp_matches_previous_picture");
 }
 int main(){
+    demandReordering();
     run({0,40,41,100,800,801,820,860,1000,1001},"irregular_cadence_fragment_ends_at_exact_next_dts");
     run({0,40,80,120,160,200,240,280,320,360},"constant_cadence_is_unchanged");
     std::vector<uint64_t> long_gop={0};for(size_t i=1;i<230;++i)long_gop.push_back(long_gop.back()+(i%2?40:1));
