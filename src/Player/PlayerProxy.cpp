@@ -105,6 +105,7 @@ PlayerProxy::PlayerProxy(
 void PlayerProxy::update(const std::string &url, const toolkit::mINI &args) {
     CHECK(getPoller()->isCurrentThread());
     _pull_url = url;
+    _transport_url = url;
     this->mINI::clear();
     (*this)[Client::kWaitTrackReady] = false;
     for (auto &pr : args) {
@@ -170,7 +171,12 @@ static int getMaxTrackSize(const std::string &url) {
 }
 
 void PlayerProxy::play(const string &url) {
+    play(url, url);
+}
+
+void PlayerProxy::play(const string &url, const string &transport_url) {
     _pull_url = url;
+    _transport_url = transport_url;
     _option.max_track = getMaxTrackSize(_pull_url);
     weak_ptr<PlayerProxy> weakSelf = shared_from_this();
     std::shared_ptr<int> piFailedCnt(new int(0)); // 连续播放失败次数
@@ -270,7 +276,7 @@ void PlayerProxy::play(const string &url) {
     });
     try {
         _status = std::make_shared<std::string>("connecting");
-        MediaPlayer::play(_pull_url );
+        MediaPlayer::play(_transport_url);
     } catch (std::exception &ex) {
         _status = std::make_shared<std::string>(std::string("play failed: ") + ex.what());
         ErrorL << ex.what();
@@ -331,7 +337,7 @@ void PlayerProxy::rePlay(int iFailedCnt) {
             return false;
         }
         WarnL << "重试播放[" << iFailedCnt << "]:" << strongPlayer->_pull_url;
-        strongPlayer->MediaPlayer::play(strongPlayer->_pull_url);
+        strongPlayer->MediaPlayer::play(strongPlayer->_transport_url);
         strongPlayer->setDirectProxy();
         return false;
     }, getPoller());

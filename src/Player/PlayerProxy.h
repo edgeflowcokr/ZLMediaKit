@@ -119,6 +119,8 @@ public:
      * [AUTO-TRANSLATED:a2f0e859]
      */
     void play(const std::string &strUrl) override;
+    // Keep the configured source identity while a mirror consumes local main.
+    void play(const std::string &strUrl, const std::string &transportUrl);
 
     /**
      * 获取观看总人数
@@ -137,6 +139,7 @@ public:
     TranslationInfo getTranslationInfo();
 
     const std::string& getUrl() const { return _pull_url; }
+    const std::string& getTransportUrl() const { return _transport_url; }
     const MediaTuple& getMediaTuple() const { return _tuple; }
     const ProtocolOption& getOption() const { return _option; }
 
@@ -170,6 +173,7 @@ private:
     MediaTuple _tuple;
     ProtocolOption _option;
     std::string _pull_url;
+    std::string _transport_url;
     toolkit::Timer::Ptr _timer;
     std::function<void()> _on_disconnect;
     std::function<void(const TranslationInfo &info)> _on_connect;

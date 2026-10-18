@@ -45,6 +45,7 @@
 #include "Http/HttpSession.h"
 #include "Http/HttpRequester.h"
 #include "Player/PlayerProxy.h"
+#include "Player/MirrorProxy.h"
 #include "Pusher/PusherProxy.h"
 #include "Rtp/RtpProcess.h"
 #include "Record/MP4Reader.h"
@@ -685,7 +686,28 @@ void addStreamProxy(const MediaTuple &tuple, const string &url, int retry_count,
     player->setOnClose([key](const SockException &ex) {
         s_player_proxy.erase(key);
     });
-    player->play(url);
+    std::string transport_url = url;
+    const auto main_stream = mirroredMainStream(tuple, url);
+    if (!main_stream.empty()) {
+        auto main_tuple = tuple;
+        main_tuple.stream = main_stream;
+        if (auto main = s_player_proxy.find(main_tuple.shortUrl())) {
+            const auto port = mINI::Instance()["rtsp.port"].as<uint16_t>();
+            const auto &main_option = main->getOption();
+            const bool compatible = main_option.enable_rtsp &&
+                main_option.enable_audio == option.enable_audio &&
+                main_option.add_mute_audio == option.add_mute_audio &&
+                main_option.modify_stamp == option.modify_stamp &&
+                !main_option.paced_sender_ms && !option.paced_sender_ms;
+            const auto mirror_url = mirroredPullUrl(tuple, url, main->getUrl(), compatible, port);
+            if (!mirror_url.empty()) {
+                transport_url = mirror_url;
+                (*player)[Client::kRtpType] = Rtsp::RTP_TCP;
+                InfoL << "[shared-mirror] stream=" << tuple.stream << " source=" << main_stream;
+            }
+        }
+    }
+    player->play(url, transport_url);
 };
 
 
