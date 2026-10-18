@@ -46,6 +46,7 @@
 #include "Http/HttpRequester.h"
 #include "Player/PlayerProxy.h"
 #include "Player/MirrorProxy.h"
+#include "Player/PlayerProxyContinuity.h"
 #include "Pusher/PusherProxy.h"
 #include "Rtp/RtpProcess.h"
 #include "Record/MP4Reader.h"
@@ -877,6 +878,15 @@ void installWebApi() {
     // Get server configuration
     // 测试url http://127.0.0.1/index/api/getServerConfig  [AUTO-TRANSLATED:59cd0d71]
     // Test url http://127.0.0.1/index/api/getServerConfig
+    api_regist("/index/api/getPlayerProxyContinuity",[](API_ARGS_MAP){
+        CHECK_SECRET();
+        const auto cap = playerProxyContinuityCapability();
+        val["data"]["revision"] = cap.revision;
+        val["data"]["preserve_media_on_retry"] = cap.preserve_media_on_retry;
+        val["data"]["compatible_tracks"] = cap.compatible_tracks;
+        val["data"]["requires_reset_when_replay_zero"] = cap.requires_reset_when_replay_zero;
+    });
+
     api_regist("/index/api/getServerConfig",[](API_ARGS_MAP){
         CHECK_SECRET();
         Value obj;

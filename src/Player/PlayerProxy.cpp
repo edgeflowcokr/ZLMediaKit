@@ -435,6 +435,10 @@ void PlayerProxy::onPlaySuccess() {
             // 编解码结构变化时必须重建封装状态；兼容重连只替换输入delegate。
             // Rebuild muxing state only when the codec structure changes; compatible reconnects only replace input delegates.
             _muxer->resetTracks();
+            // addTrackCompleted() narrowed this limit to the previous input's
+            // count. Restore the configured budget before a new audio/video
+            // structure is attached (e.g. video-only -> video + audio).
+            _muxer->setMaxTrackCount(_option.max_track);
             add_to_muxer = true;
         }
     }
@@ -482,8 +486,16 @@ bool PlayerProxy::isTrackCompatible(const Track::Ptr &track, const Track::Ptr &l
 
 bool PlayerProxy::shouldResetTracks(const Track::Ptr &video_track, const Track::Ptr &audio_track,
                                     const Track::Ptr &last_video_track, const Track::Ptr &last_audio_track) const {
-    return !isTrackCompatible(video_track, last_video_track)
-        || !isTrackCompatible(audio_track, last_audio_track);
+    if (!isTrackCompatible(video_track, last_video_track)) return true;
+    // Disabled input audio never reached the muxer, so it cannot be compared
+    // with an output track. Likewise generated mute audio is not source audio.
+    if (!_option.enable_audio) return false;
+    auto last_audio = last_audio_track;
+    if (!audio_track && _option.add_mute_audio && last_audio
+        && last_audio->getIndex() == 0xFFFF && last_audio->getCodecId() == CodecAAC) {
+        last_audio = nullptr;
+    }
+    return !isTrackCompatible(audio_track, last_audio);
 }
 
 void PlayerProxy::attachPlayerTracks(const Track::Ptr &video_track, const Track::Ptr &audio_track, bool add_to_muxer) {
