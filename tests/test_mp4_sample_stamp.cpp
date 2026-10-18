@@ -23,5 +23,13 @@ int main(){
     check(!maximum.revise(dts,pts)&&dts==(std::numeric_limits<int64_t>::max)(),"decode_overflow_rejected_without_wrap");
     MP4SampleStamp composition;dts=pts=0;composition.revise(dts,pts);dts=0;pts=(std::numeric_limits<int64_t>::max)();
     check(!composition.revise(dts,pts)&&dts==0&&pts==(std::numeric_limits<int64_t>::max)(),"composition_overflow_rejected_without_mutation");
+    MP4SampleStamp limited;dts=pts=99;
+    check(limited.revise(dts,pts,100)&&dts==99,"ts_rescale_limit_accepts_normal_sample");
+    dts=99;pts=100;
+    check(!limited.revise(dts,pts,100)&&dts==99&&pts==100,"ts_rescale_composition_overflow_is_atomic");
+    dts=pts=99;
+    check(limited.revise(dts,pts,100)&&dts==100&&pts==100,"ts_rejected_sample_does_not_advance_state");
+    dts=pts=99;
+    check(!limited.revise(dts,pts,100)&&dts==99&&pts==99,"ts_rescale_decode_limit_cannot_wrap");
     return failures?1:0;
 }

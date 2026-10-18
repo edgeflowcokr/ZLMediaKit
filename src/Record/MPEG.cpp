@@ -56,7 +56,32 @@ bool MpegMuxer::inputFrame(const Frame::Ptr &frame) {
         case CodecH265: {
             // 这里的代码逻辑是让SPS、PPS、IDR这些时间戳相同的帧打包到一起当做一个帧处理，  [AUTO-TRANSLATED:edf57c32]
             // The code logic here is to package frames with the same timestamp, such as SPS, PPS, and IDR, together as one frame.
-            return track.merger.inputFrame(frame, [this, &track](uint64_t dts, uint64_t pts, const Buffer::Ptr &buffer, bool have_idr) {
+            const bool h264_ts = !_is_ps && frame->getCodecId() == CodecH264;
+            return track.merger.inputFrame(frame, [this, &track, h264_ts](uint64_t dts, uint64_t pts, const Buffer::Ptr &buffer, bool have_idr) {
+                if (h264_ts) {
+                    // HLS consumers transmux TS into MP4. Distinct pictures
+                    // must not become zero-duration samples in that MP4.
+                    const auto maximum_ms = uint64_t((std::numeric_limits<int64_t>::max)() / 90);
+                    int64_t dts_out = int64_t(dts <= maximum_ms ? dts : 0);
+                    int64_t pts_out = int64_t(pts <= maximum_ms ? pts : 0);
+                    if (dts > maximum_ms || pts > maximum_ms ||
+                        !track.h264_sample_stamp.revise(dts_out, pts_out, int64_t(maximum_ms))) {
+                        if (!track.stamp_failure_logged) {
+                            WarnL << "H264 TS sample timestamp outside safe mux range: track=" << track.track_id;
+                            track.stamp_failure_logged = true;
+                        }
+                        return;
+                    }
+                    if (uint64_t(dts_out) != dts) {
+                        if (!track.stamp_corrections) {
+                            WarnL << "H264 TS pictures share a decode timestamp; preserve distinct samples: track="
+                                  << track.track_id << ", first_delta_ms=" << uint64_t(dts_out) - dts;
+                        }
+                        if (track.stamp_corrections != (std::numeric_limits<uint64_t>::max)()) ++track.stamp_corrections;
+                    }
+                    dts = uint64_t(dts_out);
+                    pts = uint64_t(pts_out);
+                }
                 _key_pos = have_idr;
                 // 取视频时间戳为TS的时间戳  [AUTO-TRANSLATED:5ff7796d]
                 // Take the video timestamp as the TS timestamp.
@@ -91,6 +116,12 @@ bool MpegMuxer::inputFrame(const Frame::Ptr &frame) {
 }
 
 void MpegMuxer::resetTracks() {
+    for (const auto &item : _tracks) {
+        if (item.second.stamp_corrections) {
+            InfoL << "H264 TS duplicate decode-stamp corrections: track=" << item.second.track_id
+                  << ", pictures=" << item.second.stamp_corrections;
+        }
+    }
     _have_video = false;
     // 通知片段中断  [AUTO-TRANSLATED:ed3d87ba]
     // Notify fragment interruption.

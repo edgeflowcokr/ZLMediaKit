@@ -19,6 +19,7 @@
 #include "Extension/Frame.h"
 #include "Extension/Track.h"
 #include "Common/MediaSink.h"
+#include "Common/VideoSampleStamp.h"
 #include "Util/ResourcePool.h"
 namespace mediakit {
 
@@ -99,6 +100,9 @@ private:
     struct MP4Track {
         int track_id = -1;
         FrameMergerImp merger;
+        VideoSampleStamp h264_sample_stamp;
+        uint64_t stamp_corrections = 0;
+        bool stamp_failure_logged = false;
     };
     std::unordered_map<int, MP4Track> _tracks;
     toolkit::BufferRaw::Ptr _current_buffer;
