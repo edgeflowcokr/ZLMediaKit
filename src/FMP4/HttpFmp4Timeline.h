@@ -19,6 +19,8 @@ public:
         _anchored = false;
         _base = 0;
         _track = 0;
+        _await_random_access = false;
+        _skipped_preroll = 0;
         if (init.size() > 1024 * 1024) return false;
         std::vector<Box> top, moov, trak, mdia;
         if (!boxes(init, 0, init.size(), top)) return false;
@@ -50,6 +52,18 @@ public:
 
     bool active() const { return _active; }
     uint64_t base() const { return _base; }
+    void requireRandomAccess(bool required) { _await_random_access = required && _active; }
+    bool waitingForRandomAccess() const { return _await_random_access; }
+    uint32_t skippedPreroll() const { return _skipped_preroll; }
+    bool acceptRandomAccess(bool key_frame) {
+        if (!_await_random_access) return true;
+        if (!key_frame) {
+            if (_skipped_preroll != UINT32_MAX) ++_skipped_preroll;
+            return false;
+        }
+        _await_random_access = false;
+        return true;
+    }
 
     // Validate the entire packet before copying or advancing connection state.
     // Bad metadata stops this reader instead of mixing translated and absolute
@@ -149,6 +163,8 @@ private:
         return true;
     }
     bool _active = false, _anchored = false;
+    bool _await_random_access = false;
+    uint32_t _skipped_preroll = 0;
     uint64_t _base = 0, _track = 0, _scale = 0;
 };
 

@@ -457,6 +457,13 @@ bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
         auto timeline = std::make_shared<HttpFmp4Timeline>();
         auto timeline_failed = std::make_shared<bool>(false);
         const bool local_epoch = timeline->configure(fmp4_src->getInitSegment());
+        const auto tracks = fmp4_src->getTracks(false);
+        // A cached ring batch may contain P pictures before its first IDR.
+        // Anchor only at an actually decodable picture; native HTTP video has
+        // no way to seek past that prefix when seekable is [0,0]. The exact
+        // per-picture marker is guaranteed by the single-H264 lookahead path.
+        timeline->requireRandomAccess(local_epoch && tracks.size() == 1
+                                      && tracks.front()->getCodecId() == CodecH264);
         DebugP(this) << "HTTP fMP4 connection timeline: " << (local_epoch ? "single-video local epoch" : "legacy multi-track/unsupported init");
         onWrite(std::make_shared<BufferString>(fmp4_src->getInitSegment()), true);
         weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
@@ -487,10 +494,18 @@ bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
             size_t i = 0;
             auto size = fmp4_list->size();
             fmp4_list->for_each([&](const FMP4Packet::Ptr &packet) {
+                ++i;
                 if (*timeline_failed) return;
                 if (!timeline->active()) {
-                    strong_self->onWrite(packet, ++i == size);
+                    strong_self->onWrite(packet, i == size);
                     return;
+                }
+                if (timeline->waitingForRandomAccess()) {
+                    if (!timeline->acceptRandomAccess(packet->key_frame)) return;
+                    if (timeline->skippedPreroll()) {
+                        DebugP(strong_self) << "HTTP fMP4 starts at first random-access picture, skipped_preroll="
+                                           << timeline->skippedPreroll();
+                    }
                 }
                 std::string translated;
                 if (packet->size() > 32 * 1024 * 1024 || !timeline->translate(packet->toString(), translated)) {
@@ -500,7 +515,7 @@ bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
                     strong_self->shutdown(SockException(Err_shutdown, "fmp4 connection timeline discontinuity"));
                     return;
                 }
-                strong_self->onWrite(std::make_shared<BufferString>(std::move(translated)), ++i == size);
+                strong_self->onWrite(std::make_shared<BufferString>(std::move(translated)), i == size);
             });
         });
     });

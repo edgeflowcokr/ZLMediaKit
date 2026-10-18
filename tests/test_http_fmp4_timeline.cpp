@@ -25,6 +25,10 @@ static std::string fragment(uint64_t time, bool wide = false, bool index = true,
     const auto sidx = index ? box("sidx", num(wide ? 0x01000000 : 0, 4) + num(1, 4) + num(1000, 4) + num(pts == UINT64_MAX ? time : pts, wide ? 8 : 4) + num(0, 16)) : "";
     return box("styp", "isom") + sidx + box("moof", box("traf", tfhd + tfdt + trun)) + box("mdat", "exact-video-payload");
 }
+static uint64_t value(const std::string &bytes,size_t at,size_t width) {
+    if(at>bytes.size()||width>bytes.size()-at)throw std::runtime_error("short test metadata");
+    uint64_t result=0;while(width--)result=(result<<8)|uint8_t(bytes[at++]);return result;
+}
 int main(int argc, char **argv) {
     HttpFmp4Timeline t; std::string out;
     check(t.configure(init()), "single_video_enabled");
@@ -66,10 +70,28 @@ int main(int argc, char **argv) {
     check(!t.translate(box("mfra", ""), out), "unknown_time_bearing_metadata_not_silently_changed");
     check(!t.translate(std::string(32 * 1024 * 1024 + 1, 0), out), "packet_memory_bound");
     check(!t.configure(std::string(1024 * 1024 + 1, 0)), "init_memory_bound");
+    HttpFmp4Timeline rap;
+    check(rap.configure(init()), "rap_fixture_single_video");rap.requireRandomAccess(true);
+    bool skipped=true;for(int i=0;i<9;++i)skipped=skipped&&!rap.acceptRandomAccess(false);
+    check(skipped&&rap.waitingForRandomAccess()&&rap.skippedPreroll()==9&&rap.base()==0,"preroll_pictures_do_not_set_connection_epoch");
+    check(rap.acceptRandomAccess(true)&&!rap.waitingForRandomAccess()&&rap.translate(fragment(4000),out)&&out==fragment(0),"first_random_access_picture_is_connection_zero");
+    check(rap.acceptRandomAccess(false)&&rap.translate(fragment(4040),out)&&out==fragment(40),"following_predictive_pictures_are_preserved");
+    check(rap.configure(init())&&!rap.waitingForRandomAccess()&&rap.skippedPreroll()==0,"new_connection_clears_preroll_state");
+    rap.configure(init(true));rap.requireRandomAccess(true);
+    check(rap.acceptRandomAccess(false)&&!rap.waitingForRandomAccess(),"unsupported_av_keeps_legacy_start_policy");
+    const auto with_cts=[](uint64_t dts,uint64_t pts){
+        auto bytes=fragment(dts,false,true,pts);const auto trun=bytes.find("trun");
+        bytes.replace(trun+4,4,num(0x01000800,4));bytes.replace(trun+12,4,num(uint32_t(-40),4));return bytes;
+    };
+    HttpFmp4Timeline composed;composed.configure(init());composed.requireRandomAccess(true);
+    composed.acceptRandomAccess(false);composed.acceptRandomAccess(true);
+    check(composed.translate(with_cts(900000,899960),out)&&out==with_cts(40,0),"rap_start_preserves_signed_trun_cts_and_presentation_offset");
+    check(composed.acceptRandomAccess(true)&&composed.translate(fragment(900100),out)&&out==fragment(140),"subsequent_idr_does_not_restart_connection_clock");
     // Optional offline real fMP4 inspection uses exactly the production helper.
     // It does not serve files or open sockets. Split the init from all media
     // segments and validate mdat/trun bytes separately with the existing harness.
-    if (argc == 3) {
+    if (argc == 3 || argc == 4) {
+        const bool rap_mode = argc == 4 && std::string(argv[3]) == "--rap";
         std::ifstream in(argv[1], std::ios::binary);
         std::string bytes((std::istreambuf_iterator<char>(in)), {}), header, media, translated;
         HttpFmp4Timeline real;
@@ -81,13 +103,23 @@ int main(int argc, char **argv) {
             auto type = bytes.substr(at + 4, 4);
             if (type == "ftyp" || type == "moov") {
                 header += bytes.substr(at, n);
-                if (type == "moov") ok = real.configure(header);
+                if (type == "moov") { ok = real.configure(header);real.requireRandomAccess(rap_mode); }
             }
             else media += bytes.substr(at, n);
             at += n;
             if (type == "mdat") {
-                ok = real.active() && real.translate(media, out);
-                if (ok) translated += out;
+                bool key=false;
+                if(rap_mode){
+                    const auto trun=media.find("trun");
+                    if(trun==std::string::npos){ok=false;break;}
+                    const auto flags=value(media,trun+4,4);
+                    const auto first=trun+12+((flags&1)?4:0);
+                    key=(flags&4)&&value(media,first,4)==0x02000000;
+                }
+                if(real.acceptRandomAccess(key)) {
+                    ok = real.active() && real.translate(media, out);
+                    if (ok) translated += out;
+                }
                 media.clear();
             }
         }

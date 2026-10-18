@@ -30,6 +30,8 @@ public:
 
 public:
     uint64_t time_stamp = 0;
+    // Per-fragment marker, not the coarser ring batch's "contains a key" bit.
+    bool key_frame = false;
 };
 
 // FMP4直播源  [AUTO-TRANSLATED:15c43604]
@@ -110,6 +112,7 @@ public:
      * [AUTO-TRANSLATED:3b310b27]
      */
     void onWrite(FMP4Packet::Ptr packet, bool key) override {
+        packet->key_frame = key;
         if (!_ring) {
             createRing();
         }
