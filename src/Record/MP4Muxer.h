@@ -16,8 +16,34 @@
 #include "Common/MediaSink.h"
 #include "Common/Stamp.h"
 #include "MP4.h"
+#include <limits>
 
 namespace mediakit {
+
+// One call per merged video picture, never per NAL/configuration packet.
+// MP4 samples with equal DTS can disappear at a decoder even when their bytes
+// are intact. Preserve the composition offset while giving each picture the
+// smallest representable positive decode duration (the mux API uses ms).
+class MP4SampleStamp {
+public:
+    bool revise(int64_t &dts, int64_t &pts) {
+        if (dts < 0) return false;
+        if (_have_previous && dts <= _last_dts) {
+            const auto maximum = (std::numeric_limits<int64_t>::max)();
+            if (_last_dts == maximum) return false;
+            const auto delta = _last_dts + 1 - dts;
+            if (pts > maximum - delta) return false;
+            dts += delta;
+            pts += delta;
+        }
+        _last_dts = dts;
+        _have_previous = true;
+        return true;
+    }
+private:
+    bool _have_previous = false;
+    int64_t _last_dts = 0;
+};
 
 class MP4MuxerInterface : public MediaSinkInterface {
 public:
@@ -107,6 +133,9 @@ private:
         int track_id = -1;
         Stamp stamp;
         FrameMergerImp merger;
+        MP4SampleStamp h264_sample_stamp;
+        uint64_t h264_stamp_corrections = 0;
+        bool h264_stamp_failure_logged = false;
     };
     std::unordered_map<int, MP4Track> _tracks;
 };

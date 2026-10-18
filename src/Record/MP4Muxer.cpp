@@ -85,6 +85,12 @@ uint64_t MP4MuxerInterface::getDuration() const {
 }
 
 void MP4MuxerInterface::resetTracks() {
+    for (const auto &item : _tracks) {
+        if (item.second.h264_stamp_corrections) {
+            InfoL << "H264 MP4 duplicate decode-stamp corrections: track=" << item.second.track_id
+                  << ", pictures=" << item.second.h264_stamp_corrections;
+        }
+    }
     _started = false;
     _have_video = false;
     _mov_writter = nullptr;
@@ -141,9 +147,29 @@ bool MP4MuxerInterface::inputFrame(const Frame::Ptr &frame) {
         case CodecH265: {
             // 这里的代码逻辑是让SPS、PPS、IDR这些时间戳相同的帧打包到一起当做一个帧处理，  [AUTO-TRANSLATED:edf57c32]
             // The code logic here is to package frames with the same timestamp, such as SPS, PPS, and IDR, as one frame,
-            track.merger.inputFrame(frame, [this, &track](uint64_t dts, uint64_t pts, const Buffer::Ptr &buffer, bool have_idr) {
+            const bool h264 = frame->getCodecId() == CodecH264;
+            track.merger.inputFrame(frame, [this, &track, h264](uint64_t dts, uint64_t pts, const Buffer::Ptr &buffer, bool have_idr) {
                 int64_t dts_out, pts_out;
                 track.stamp.revise(dts, pts, dts_out, pts_out);
+                if (h264) {
+                    const auto original_dts = dts_out;
+                    if (!track.h264_sample_stamp.revise(dts_out, pts_out)) {
+                        if (!track.h264_stamp_failure_logged) {
+                            WarnL << "H264 MP4 sample timestamp cannot advance safely: track=" << track.track_id;
+                            track.h264_stamp_failure_logged = true;
+                        }
+                        return;
+                    }
+                    if (dts_out != original_dts) {
+                        if (!track.h264_stamp_corrections) {
+                            WarnL << "H264 MP4 pictures share a decode timestamp; preserve distinct samples: track="
+                                  << track.track_id << ", first_delta_ms=" << dts_out - original_dts;
+                        }
+                        if (track.h264_stamp_corrections != (std::numeric_limits<uint64_t>::max)()) {
+                            ++track.h264_stamp_corrections;
+                        }
+                    }
+                }
                 mp4_writer_write(_mov_writter.get(), track.track_id, buffer->data(), buffer->size(), pts_out, dts_out, have_idr ? MOV_AV_FLAG_KEYFREAME : 0);
             });
             break;
