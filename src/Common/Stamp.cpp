@@ -83,6 +83,15 @@ void DeltaStamp::setMaxDelta(size_t max_delta) {
     _max_delta = max_delta;
 }
 
+Stamp::Stamp() {
+    // Live VBR sources can have valid GOP/arrival gaps above 300 ms. Clipping
+    // each of those to the previous small delta compresses the media clock on
+    // every GOP, so real-time consumers stall or discard frames to catch up.
+    // Use the existing live discontinuity window; keep larger jumps bounded.
+    // DeltaStamp's independent recorder policy remains unchanged.
+    setMaxDelta(MAX_DELTA_STAMP);
+}
+
 void Stamp::setPlayBack(bool playback) {
     _playback = playback;
 }

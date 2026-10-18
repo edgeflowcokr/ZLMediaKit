@@ -61,6 +61,8 @@ protected:
 // Calculate the relative timestamp or generate a smooth timestamp
 class Stamp : public DeltaStamp{
 public:
+    Stamp();
+
     /**
      * 求取相对时间戳,同时实现了音视频同步、限制dts回退等功能
      * @param dts 输入dts，如果为0则根据系统时间戳生成
