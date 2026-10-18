@@ -46,6 +46,20 @@ Buffer::Ptr RtcpContext::createRtcpRR(uint32_t rtcp_ssrc, uint32_t rtp_ssrc) {
     throw std::runtime_error("没有实现, rtp发送者尝试发送rr包");
 }
 
+Buffer::Ptr RtcpContext::createRtcpRRCompound(uint32_t rtcp_ssrc, uint32_t rtp_ssrc, const std::string &cname) {
+    if (cname.empty() || cname.size() > 255) {
+        throw std::invalid_argument("RTCP CNAME must contain 1..255 bytes");
+    }
+    auto rr = createRtcpRR(rtcp_ssrc, rtp_ssrc);
+    auto sdes = RtcpSdes::create({ cname });
+    sdes->chunks.type = (uint8_t)SdesType::RTCP_SDES_CNAME;
+    sdes->chunks.ssrc = htonl(rtcp_ssrc);
+    auto sdes_buffer = RtcpHeader::toBuffer(std::move(sdes));
+    std::string compound(rr->data(), rr->size());
+    compound.append(sdes_buffer->data(), sdes_buffer->size());
+    return std::make_shared<BufferString>(std::move(compound));
+}
+
 Buffer::Ptr RtcpContext::createRtcpXRDLRR(uint32_t rtcp_ssrc, uint32_t rtp_ssrc) {
     throw std::runtime_error("没有实现, rtp发送者尝试发送xr dlrr包");
 }

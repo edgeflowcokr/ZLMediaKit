@@ -835,12 +835,8 @@ void RtspPlayer::onBeforeRtpSorted(const RtpPacket::Ptr &rtp, int track_idx) {
     };
 
     auto ssrc = rtp->getSSRC();
-    auto rtcp = rtcp_ctx->createRtcpRR(ssrc + 1, ssrc);
-    auto rtcp_sdes = RtcpSdes::create({ kServerName });
-    rtcp_sdes->chunks.type = (uint8_t)SdesType::RTCP_SDES_CNAME;
-    rtcp_sdes->chunks.ssrc = htonl(ssrc);
-    send_rtcp(this, track_idx, std::move(rtcp));
-    send_rtcp(this, track_idx, RtcpHeader::toBuffer(rtcp_sdes));
+    // One UDP datagram / TCP interleaved record, with the RR sender's CNAME.
+    send_rtcp(this, track_idx, rtcp_ctx->createRtcpRRCompound(ssrc + 1, ssrc, kServerName));
 }
 
 void RtspPlayer::onPlayResult_l(const SockException &ex, bool handshake_done) {

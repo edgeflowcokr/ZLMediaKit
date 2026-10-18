@@ -104,6 +104,10 @@ public:
      */
     virtual toolkit::Buffer::Ptr createRtcpRR(uint32_t rtcp_ssrc, uint32_t rtp_ssrc);
 
+    // Regular RTP/AVP receiver reports must travel with the reporting
+    // participant's CNAME in one compound RTCP packet (RFC 3550 section 6.1).
+    toolkit::Buffer::Ptr createRtcpRRCompound(uint32_t rtcp_ssrc, uint32_t rtp_ssrc, const std::string &cname);
+
     /**
      * 上次结果与本次结果间应收包数
      * Number of packets that should be received between the last result and the current result
