@@ -1,4 +1,4 @@
-﻿/*
+/*
  * Copyright (c) 2016-present The ZLMediaKit project authors. All Rights Reserved.
  *
  * This file is part of ZLMediaKit(https://github.com/ZLMediaKit/ZLMediaKit).
@@ -1989,11 +1989,26 @@ RETRY:
         return;
     }
 
-    if (check_profile) {
+    const bool passthrough_h264 = offer_media.type == TrackVideo && _rtsp_video_plan
+        && getCodecId(_rtsp_video_plan->codec) == CodecH264;
+    if (check_profile && !passthrough_h264) {
         // 如果是由于检查profile导致匹配失败，那么重试一次，且不检查profile  [AUTO-TRANSLATED:897fa4ae]
         // If the matching fails due to profile check, retry once and do not check profile
         check_profile = false;
         goto RETRY;
+    }
+
+    if (passthrough_h264) {
+        RtcMedia rejected = offer_media;
+        rejected.port = 0;
+        rejected.direction = RtpDirection::inactive;
+        rejected.role = mathDtlsRole(offer_media.role);
+        rejected.ice_ufrag = configure.ice_ufrag;
+        rejected.ice_pwd = configure.ice_pwd;
+        rejected.fingerprint = configure.fingerprint;
+        rejected.rtp_rtx_ssrc.clear();
+        ret->media.emplace_back(std::move(rejected));
+        return;
     }
 
     if (check_codec) {
@@ -2035,6 +2050,75 @@ static const string kH264Profile { "profile-level-id" };
 static const string kH265Profile { "profile-id" };
 static const string kMode { "packetization-mode" };
 
+// RFC 6184 tables 5/8: equivalent sub-profiles, rather than exact fmtp text.
+// This is for untranscoded RTSP playback only; it must not invent a lower SPS
+// level or relax a receiver's advertised limit.
+static int h264Profile(unsigned id, unsigned flags) {
+    if ((id == 0x42 && (flags & 0x4f) == 0x40)
+        || (id == 0x4d && (flags & 0x8f) == 0x80)
+        || (id == 0x58 && (flags & 0xcf) == 0xc0)) return 1;
+    if ((id == 0x42 && (flags & 0x4f) == 0)
+        || (id == 0x58 && (flags & 0xcf) == 0x80)) return 2;
+    if (id == 0x4d && (flags & 0xaf) == 0) return 3;
+    if (id == 0x64 && flags == 0) return 4;
+    if (id == 0x64 && flags == 0x0c) return 5;
+    if (id == 0xf4 && flags == 0) return 6;
+    return 0;
+}
+
+static bool parseH264Hex(const string &text, size_t size, unsigned &value) {
+    if (text.size() != size) return false;
+    value = 0;
+    for (const auto c : text) {
+        const int digit = c >= '0' && c <= '9' ? c - '0'
+            : c >= 'a' && c <= 'f' ? c - 'a' + 10
+            : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+        if (digit < 0) return false;
+        value = (value << 4) | unsigned(digit);
+    }
+    return true;
+}
+
+static int h264Level(unsigned id, unsigned flags, unsigned level) {
+    if ((level == 11 && (flags & 0x10) && (id == 0x42 || id == 0x4d || id == 0x58))
+        || (level == 9 && !(flags & 0x10))) return 105; // between 1 and 1.1
+    switch (level) {
+        case 10: case 11: case 12: case 13: case 20: case 21: case 22:
+        case 30: case 31: case 32: case 40: case 41: case 42:
+        case 50: case 51: case 52: case 60: case 61: case 62: return level * 10;
+        default: return 0;
+    }
+}
+
+static bool h264CanReceive(const RtcCodecPlan &source, const RtcCodecPlan &receiver) {
+    unsigned a, b;
+    // RFC 6184 section 8.1: absent profile-level-id is Baseline level 1.
+    auto src = source.getFmtp(kH264Profile.c_str()), dst = receiver.getFmtp(kH264Profile.c_str());
+    if (!parseH264Hex(src.empty() ? "42000a" : src, 6, a)
+        || !parseH264Hex(dst.empty() ? "42000a" : dst, 6, b)) return false;
+    const auto profile = h264Profile(a >> 16, (a >> 8) & 255);
+    if (!profile || profile != h264Profile(b >> 16, (b >> 8) & 255)) return false;
+    const auto required = h264Level(a >> 16, (a >> 8) & 255, a & 255);
+    auto available = h264Level(b >> 16, (b >> 8) & 255, b & 255);
+    const auto default_level = available;
+    const auto asymmetry = receiver.getFmtp("level-asymmetry-allowed");
+    if (!asymmetry.empty() && asymmetry != "0" && asymmetry != "1") return false;
+    const auto max_recv = receiver.getFmtp("max-recv-level");
+    if (!max_recv.empty()) {
+        unsigned extension;
+        if (!parseH264Hex(max_recv, 4, extension)) return false;
+        const auto extended = h264Level(b >> 16, extension >> 8, extension & 255);
+        if (extended <= available) return false;
+        available = extended;
+    }
+    const auto mode = receiver.getFmtp(kMode.c_str());
+    // Disabling small-NAL STAP aggregation does not disable FU-A for large
+    // NALs. Both encoder settings therefore require non-interleaved mode 1.
+    return required && available && required <= available
+        && (required <= default_level || asymmetry == "1")
+        && mode == "1";
+}
+
 bool RtcConfigure::onCheckCodecProfile(const RtcCodecPlan &plan, CodecId codec) const {
     if (_rtsp_audio_plan && codec == getCodecId(_rtsp_audio_plan->codec)) {
         if (plan.sample_rate != _rtsp_audio_plan->sample_rate || plan.channel != _rtsp_audio_plan->channel) {
@@ -2045,14 +2129,7 @@ bool RtcConfigure::onCheckCodecProfile(const RtcCodecPlan &plan, CodecId codec) 
         return true;
     }
     if (_rtsp_video_plan && codec == CodecH264 && getCodecId(_rtsp_video_plan->codec) == CodecH264) {
-        // h264时，profile-level-id  [AUTO-TRANSLATED:94a5f360]
-        // When h264, profile-level-id
-        if (strcasecmp(_rtsp_video_plan->fmtp[kH264Profile].data(), const_cast<RtcCodecPlan &>(plan).fmtp[kH264Profile].data())) {
-            // profile-level-id 不匹配  [AUTO-TRANSLATED:814ec4c4]
-            // profile-level-id does not match
-            return false;
-        }
-        return true;
+        return getCodecId(plan.codec) == CodecH264 && h264CanReceive(*_rtsp_video_plan, plan);
     }
 
     if (_rtsp_video_plan && codec == CodecH265 && getCodecId(_rtsp_video_plan->codec) == CodecH265) {
@@ -2081,9 +2158,15 @@ void RtcConfigure::onSelectPlan(RtcCodecPlan &plan, CodecId codec) const {
     if (_rtsp_video_plan && codec == CodecH264 && getCodecId(_rtsp_video_plan->codec) == CodecH264) {
         // h264时，设置packetization-mod为一致  [AUTO-TRANSLATED:59a00889]
         // When h264, set packetization-mod to be consistent
-        auto mode = _rtsp_video_plan->fmtp[kMode];
-        GET_CONFIG(bool, h264_stap_a, Rtp::kH264StapA);
-        plan.fmtp[kMode] = mode.empty() ? std::to_string(h264_stap_a) : mode;
+        plan.fmtp[kMode] = "1";
+        // sendonly describes the stream, not the peer's receive capability.
+        const auto source_profile = _rtsp_video_plan->getFmtp(kH264Profile.c_str());
+        plan.fmtp[kH264Profile] = source_profile.empty() ? "42000a" : source_profile;
+        for (const auto *key : {"max-recv-level", "max-mbps", "max-smbps", "max-fs",
+                               "max-cpb", "max-dpb", "max-br", "redundant-pic-cap",
+                               "max-rcmd-nalu-size", "deint-buf-cap", "sar-understood"}) {
+            plan.fmtp.erase(key);
+        }
     }
     if (_rtsp_audio_plan && codec == CodecAAC && getCodecId(_rtsp_audio_plan->codec) == CodecAAC) {
         // aac时，设置fmtp
