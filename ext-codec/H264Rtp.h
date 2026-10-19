@@ -55,11 +55,13 @@ private:
     bool decodeRtp(const RtpPacket::Ptr &rtp);
     H264Frame::Ptr obtainFrame();
     void outputFrame(const RtpPacket::Ptr &rtp, const H264Frame::Ptr &frame);
+    bool rejectMalformedPayload(int nal_type, ssize_t size);
 
 private:
     bool _is_gop = false;
     bool _gop_dropped = false;
     bool _fu_dropped = true;
+    bool _malformed_payload_logged = false; // 디코더 인스턴스당 한 번만 경고한다.
     uint16_t _last_seq = 0;
     H264Frame::Ptr _frame;
     DtsGenerator _dts_generator;

@@ -80,6 +80,55 @@ bool run(const char *name, const std::vector<uint64_t> &pts, bool multi_slice,
     return ok;
 }
 
+static bool malformedPayloads() {
+    bool ok=true;
+    auto check=[&](bool pass,const char *name){std::cout<<name<<" result="<<(pass?"PASS":"FAIL")<<'\n';ok=ok&&pass;};
+    {
+        H264RtpDecoder decoder; RtpInfo info(7,1400,90000,96,0,0);int pictures=0;
+        decoder.addDelegate([&](const Frame::Ptr &f){if(!f->configFrame())++pictures;return true;});
+        const char start[]={0x7c,char(0x85),char(0x80)};
+        decoder.inputRtp(info.makeRtp(TrackVideo,start,sizeof(start),false,1000));
+        // 선언된 RTP payload는1바이트지만, backing allocation의 다음 바이트는
+        // 0으로 고정한다. 기존 코드의 음수 append길이를 안전하게 재현한다.
+        const char short_fu[]={0x7c,0};
+        auto bad=info.makeRtp(TrackVideo,short_fu,sizeof(short_fu),false,1000);
+        bad->setSize(bad->size()-1); --bad->data()[3];
+        bool threw=false;try{decoder.inputRtp(bad);}catch(const std::exception &){threw=true;}
+        check(!threw&&pictures==0,"truncated_fua_does_not_throw_or_emit_partial_picture");
+        const char p[]={0x61,char(0x80)},key[]={0x65,char(0x80)};
+        decoder.inputRtp(info.makeRtp(TrackVideo,p,sizeof(p),true,1040));
+        check(pictures==0,"truncated_fua_waits_for_a_complete_new_gop");
+        decoder.inputRtp(info.makeRtp(TrackVideo,key,sizeof(key),true,1080));
+        decoder.inputRtp(info.makeRtp(TrackVideo,p,sizeof(p),true,1120));
+        check(pictures==2,"truncated_fua_recovers_on_idr_without_reconnect");
+    }
+    {
+        H264RtpDecoder decoder;RtpInfo info(8,1400,90000,96,0,0);int pictures=0;
+        decoder.addDelegate([&](const Frame::Ptr &f){if(!f->configFrame())++pictures;return true;});
+        const char short_stap[]={0x78,0,3,0x65,char(0x80),0};
+        auto bad=info.makeRtp(TrackVideo,short_stap,sizeof(short_stap),true,1000);
+        bad->setSize(bad->size()-1); --bad->data()[3];
+        bool threw=false;try{decoder.inputRtp(bad);}catch(const std::exception &){threw=true;}
+        check(!threw&&pictures==0,"truncated_stapa_length_does_not_read_past_payload");
+        const char key[]={0x65,char(0x80)};
+        decoder.inputRtp(info.makeRtp(TrackVideo,key,sizeof(key),true,1040));
+        check(pictures==1,"truncated_stapa_recovers_on_next_idr");
+    }
+    {
+        H264RtpDecoder decoder;RtpInfo info(9,1400,90000,96,0,0);int pictures=0;
+        decoder.addDelegate([&](const Frame::Ptr &f){if(!f->configFrame())++pictures;return true;});
+        const char start[]={0x7c,char(0x85),char(0x80)},empty[]={0x7c,5},end[]={0x7c,0x45,0};
+        decoder.inputRtp(info.makeRtp(TrackVideo,start,sizeof(start),false,1000));
+        decoder.inputRtp(info.makeRtp(TrackVideo,empty,sizeof(empty),false,1000));
+        decoder.inputRtp(info.makeRtp(TrackVideo,end,sizeof(end),true,1000));
+        check(pictures==1,"valid_empty_fua_fragment_remains_supported");
+        const char stap[]={0x78,0,2,0x65,char(0x80),0,2,0x61,char(0x80)};
+        decoder.inputRtp(info.makeRtp(TrackVideo,stap,sizeof(stap),true,1040));
+        check(pictures==3,"valid_stapa_preserves_all_nals");
+    }
+    return ok;
+}
+
 int main() {
     mINI::Instance()[General::kMergeWriteMS] = 0;
     mINI::Instance()[Rtsp::kLowLatency] = 0;
@@ -90,5 +139,6 @@ int main() {
     ok = run("same_pts_config_changes", {1000,1000,1000,1040,1040,1080}, false, false, false, true) && ok;
     ok = run("reordered_pts_unchanged", {1000,1080,1040,1160,1120,1200}, false, true) && ok;
     ok = run("low_latency_unchanged", {1000,1040,1080,1120,1160,1200}, false, false, true) && ok;
+    ok = malformedPayloads() && ok;
     return ok ? 0 : 1;
 }

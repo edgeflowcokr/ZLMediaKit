@@ -106,13 +106,18 @@ bool H264RtpDecoder::unpackStapA(const RtpPacket::Ptr &rtp, const uint8_t *ptr, 
     // STAP-A single-time aggregation packet
     auto have_key_frame = false;
     auto end = ptr + size;
+    // 길이 헤더2바이트를 뺀 실제 잔여 크기로 먼저 전체를 검사한다.
+    // 뒤쪽이 잘린 STAP의 앞 NAL도 정상 그림으로 먼저 전달하지 않는다.
+    auto scan = ptr;
+    while (scan < end) {
+        if (end - scan < 2) return rejectMalformedPayload(24, size);
+        const auto len = (uint16_t(scan[0]) << 8) | scan[1];
+        scan += 2;
+        if (!len || len > end - scan) return rejectMalformedPayload(24, size);
+        scan += len;
+    }
     while (ptr + 2 < end) {
         uint16_t len = (ptr[0] << 8) | ptr[1];
-        if (!len || ptr + len > end) {
-            WarnL << "invalid rtp data size:" << len << ",rtp:\r\n" << rtp->dumpString();
-            _gop_dropped = true;
-            break;
-        }
         ptr += 2;
         if (singleFrame(rtp, ptr, len, stamp)) {
             have_key_frame = true;
@@ -123,6 +128,9 @@ bool H264RtpDecoder::unpackStapA(const RtpPacket::Ptr &rtp, const uint8_t *ptr, 
 }
 
 bool H264RtpDecoder::mergeFu(const RtpPacket::Ptr &rtp, const uint8_t *ptr, ssize_t size, uint64_t stamp, uint16_t seq){
+    // FU indicator/header가 잘리면 ptr[1] 접근과 size-2의 음수 append가
+    // 예외를 만들어 RTSP 입력 전체를 종료시킬 수 있다. 정상 빈 FU는 유지한다.
+    if (size < 2) return rejectMalformedPayload(28, size);
     auto nal_suffix = *ptr & (~0x1F);
     FuFlags *fu = (FuFlags *) (ptr + 1);
     if (fu->start_bit) {
@@ -164,6 +172,17 @@ bool H264RtpDecoder::mergeFu(const RtpPacket::Ptr &rtp, const uint8_t *ptr, ssiz
     // 该帧最后一个rtp包,输出frame  [AUTO-TRANSLATED:a648aaa5]
     // The last rtp packet of this frame, output frame
     outputFrame(rtp, _frame);
+    return false;
+}
+
+bool H264RtpDecoder::rejectMalformedPayload(int nal_type, ssize_t size) {
+    _gop_dropped = true;
+    _fu_dropped = true;
+    _frame = obtainFrame();
+    if (!_malformed_payload_logged) {
+        _malformed_payload_logged = true;
+        WarnL << "malformed H264 RTP payload dropped; waiting for IDR: nal=" << nal_type << ", bytes=" << size;
+    }
     return false;
 }
 
