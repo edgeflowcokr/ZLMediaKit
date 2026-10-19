@@ -1,6 +1,7 @@
 #include <iostream>
 #include "Player/MirrorProxy.h"
 #include "Player/PlayerProxy.h"
+#include "Rtsp/RtspInputProgress.h"
 #include "Poller/EventPoller.h"
 using namespace mediakit;
 static int failures = 0;
@@ -42,7 +43,9 @@ int main() {
     player->play("fixture://logical-source", "fixture://local-mirror");
     expect(player->getUrl() == "fixture://logical-source", "logical_identity_preserved");
     expect(player->getTransportUrl() == "fixture://local-mirror", "transport_identity_separate");
+    expect((*player)[kRtspDiagnosticStream]=="sub/camera"&&(*player)[kRtspDiagnosticRoute]=="shared-mirror","diagnostic_identity_distinguishes_logical_url_from_transport");
     player->getPoller()->sync([&] {player->update("fixture://new-source", {});});
     expect(player->getTransportUrl() == "fixture://new-source", "source_update_clears_old_mirror");
+    expect((*player)[kRtspDiagnosticRoute]=="upstream","diagnostic_route_is_refreshed_when_source_changes");
     return failures ? 1 : 0;
 }

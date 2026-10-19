@@ -13,6 +13,7 @@
 
 #include "FMP4MediaSource.h"
 #include "Record/MP4Muxer.h"
+#include "Rtsp/RtspInputProgress.h"
 
 namespace mediakit {
 
@@ -58,6 +59,8 @@ public:
     }
 
     bool inputFrame(const Frame::Ptr &frame) override {
+        ++_input_frames;
+        _input_ticker.resetTime();
         refreshDemand(_media_src->readerCount());
         if (_clear_cache && _option.fmp4_demand) {
             _clear_cache = false;
@@ -90,6 +93,8 @@ protected:
         if (string.empty()) {
             return;
         }
+        ++_output_fragments;
+        _output_ticker.resetTime();
         FMP4Packet::Ptr packet = std::make_shared<FMP4Packet>(std::move(string));
         packet->time_stamp = stamp;
         _media_src->onWrite(std::move(packet), key_frame);
@@ -97,6 +102,21 @@ protected:
 
 private:
     void refreshDemand(int readers) {
+        if (readers > 0) {
+            _had_readers = true;
+        } else if (_had_readers) {
+            _had_readers = false;
+            // 브라우저가 준비/정지 실패로 떠날 때 기존 source owner에서만 남긴다.
+            // 활성 마지막 독자가 떠나고 출력 공백2.5초 이상인 경우, 인스턴스당8회 상한.
+            if (_output_ticker.elapsedTime() >= 2500 && _boundary_logs < 8) {
+                ++_boundary_logs;
+                WarnL << "[fmp4-output-boundary] stream=" << safeRtspDiagnosticStream(_media_src->getMediaTuple().stream)
+                      << ", input_frames=" << _input_frames << ", output_fragments=" << _output_fragments
+                      << ", input_age_ms=" << _input_ticker.elapsedTime()
+                      << ", output_age_ms=" << _output_ticker.elapsedTime()
+                      << ", enabled_before=" << _enabled;
+            }
+        }
         const bool enabled = !_option.fmp4_demand || readers > 0;
         if (_option.fmp4_demand && _enabled && !enabled) _clear_cache = true;
         _enabled = enabled;
@@ -104,6 +124,10 @@ private:
     bool _enabled = true;
     bool _clear_cache = false;
     bool _stale_reader_logged = false; // 스트림 인스턴스당 한 번만 진단한다.
+    bool _had_readers = false;
+    uint8_t _boundary_logs = 0;
+    uint64_t _input_frames = 0, _output_fragments = 0;
+    toolkit::Ticker _input_ticker, _output_ticker;
     ProtocolOption _option;
     FMP4MediaSource::Ptr _media_src;
 };

@@ -1,6 +1,7 @@
 #include <iostream>
 #include <cstring>
 #include "Rtcp/RtcpContext.h"
+#include "Rtsp/RtspInputProgress.h"
 #include "Util/logger.h"
 using namespace mediakit;
 static int failures = 0;
@@ -19,6 +20,25 @@ int main() {
     // shutdown cannot race first-time logger construction in a tiny test.
     auto logger = toolkit::Logger::Instance().shared_from_this();
     std::cout.setf(std::ios::unitbuf);
+    RtspInputProgress progress;progress.reset(1000);
+    expect(progress.tcp_bytes==0&&progress.accepted_rtp==0&&progress.sorted_rtp==0,"input_boundary_starts_with_empty_generation");
+    progress.onTcp(123,1100);progress.onTcp(77,1200);
+    expect(progress.tcp_reads==2&&progress.tcp_bytes==200&&progress.tcp_at==1200,"input_boundary_counts_tcp_not_media_assumptions");
+    progress.onFramedRtp(1250);
+    expect(progress.framed_rtp==1&&progress.accepted_rtp==0&&progress.framed_at==1250,"input_boundary_distinguishes_framed_rtp_from_accepted");
+    progress.onAcceptedRtp(1300);
+    expect(progress.accepted_rtp==1&&progress.sorted_rtp==0&&progress.rtp_at==1300,"input_boundary_distinguishes_accepted_from_sorted");
+    progress.onSortedRtp(1400);
+    expect(progress.sorted_rtp==1&&progress.sorted_at==1400,"input_boundary_records_sorted_progress");
+    expect(RtspInputProgress::age(1500,progress.tcp_at)==300&&RtspInputProgress::age(1500,progress.sorted_at)==100,"input_boundary_ages_use_same_monotonic_clock");
+    expect(RtspInputProgress::age(10,20)==0,"input_boundary_age_never_wraps");
+    progress.reset(2000);
+    expect(progress.tcp_reads==0&&progress.tcp_bytes==0&&progress.framed_rtp==0&&progress.accepted_rtp==0&&progress.sorted_rtp==0&&progress.tcp_at==2000&&progress.framed_at==2000&&progress.rtp_at==2000&&progress.sorted_at==2000,"input_boundary_reconnect_resets_all_counts_and_ages");
+    expect(safeRtspDiagnosticStream("main/ch-test_1")=="main/ch-test_1","input_boundary_allows_only_safe_stream_identity");
+    expect(safeRtspDiagnosticStream("rtsp://user:secret@host/live")=="unclassified"&&safeRtspDiagnosticStream("main/ch-test\nsecret")=="unclassified","input_boundary_rejects_urls_and_log_injection");
+    expect(safeRtspDiagnosticStream(std::string(161,'a'))=="unclassified","input_boundary_caps_identity_length");
+    expect(safeRtspDiagnosticRoute("upstream")=="upstream"&&safeRtspDiagnosticRoute("shared-mirror")=="shared-mirror","input_boundary_separates_upstream_from_local_mirror");
+    expect(safeRtspDiagnosticRoute("http://user:secret@host")=="unclassified","input_boundary_route_is_an_allowlist");
     RtcpContextForRecv ctx;
     for (int n=100;n<110;++n) ctx.onRtp(n,90000+(n-100)*3000,100000,90000,1200);
     const uint32_t source=0xaabbccdd, sender=source+1;

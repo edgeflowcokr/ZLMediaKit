@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "PlayerProxy.h"
+#include "Rtsp/RtspInputProgress.h"
 #include "Common/config.h"
 #include "Rtmp/RtmpMediaSource.h"
 #include "Rtmp/RtmpPlayer.h"
@@ -111,6 +112,8 @@ void PlayerProxy::update(const std::string &url, const toolkit::mINI &args) {
     for (auto &pr : args) {
         (*this)[pr.first] = pr.second;
     }
+    (*this)[kRtspDiagnosticStream] = safeRtspDiagnosticStream(_tuple.stream);
+    (*this)[kRtspDiagnosticRoute] = "upstream";
 }
 
 void PlayerProxy::setPlayCallbackOnce(function<void(const SockException &ex)> cb) {
@@ -177,6 +180,9 @@ void PlayerProxy::play(const string &url) {
 void PlayerProxy::play(const string &url, const string &transport_url) {
     _pull_url = url;
     _transport_url = transport_url;
+    // 재시도에도 그대로 전파되는 내부 진단 식별자. URL/자격증명은 기록하지 않는다.
+    (*this)[kRtspDiagnosticStream] = safeRtspDiagnosticStream(_tuple.stream);
+    (*this)[kRtspDiagnosticRoute] = transport_url == url ? "upstream" : "shared-mirror";
     _option.max_track = getMaxTrackSize(_pull_url);
     weak_ptr<PlayerProxy> weakSelf = shared_from_this();
     std::shared_ptr<int> piFailedCnt(new int(0)); // 连续播放失败次数

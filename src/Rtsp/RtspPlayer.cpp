@@ -82,6 +82,8 @@ void RtspPlayer::play(const string &strUrl) {
 
     teardown();
 
+    _input_progress.reset(getCurrentMillisecond());
+
     if (url._user.size()) {
         (*this)[Client::kRtspUser] = url._user;
     }
@@ -126,6 +128,7 @@ void RtspPlayer::onConnect(const SockException &err) {
 }
 
 void RtspPlayer::onRecv(const Buffer::Ptr &buf) {
+    _input_progress.onTcp(buf->size(), getCurrentMillisecond());
     if (_benchmark_mode && !_play_check_timer) {
         // 在性能测试模式下，如果rtsp握手完毕后，不再解析rtp包  [AUTO-TRANSLATED:747b5399]
         // In performance test mode, if the RTSP handshake is complete, no RTP packets will be parsed
@@ -626,6 +629,7 @@ void RtspPlayer::onRtpPacket(const char *data, size_t len) {
     uint8_t interleaved = data[1];
     if (interleaved % 2 == 0) {
         CHECK(len > RtpPacket::kRtpHeaderSize + RtpPacket::kRtpTcpHeaderSize);
+        _input_progress.onFramedRtp(getCurrentMillisecond());
         RtpHeader *header = (RtpHeader *)(data + RtpPacket::kRtpTcpHeaderSize);
         trackIdx = getTrackIndexByPT(header->pt);
         if (trackIdx == -1) {
@@ -665,6 +669,7 @@ void RtspPlayer::onRtcpPacket(int track_idx, SdpTrack::Ptr &track, uint8_t *data
 }
 
 void RtspPlayer::onRtpSorted(RtpPacket::Ptr rtppt, int trackidx) {
+    _input_progress.onSortedRtp(getCurrentMillisecond());
     _stamp[trackidx] = rtppt->getStampMS();
     if (!_first_stamp[trackidx]) {
         _first_stamp[trackidx] = _stamp[trackidx];
@@ -789,6 +794,7 @@ void RtspPlayer::sendRtspRequest(const string &cmd, const string &url, const Str
 }
 
 void RtspPlayer::onBeforeRtpSorted(const RtpPacket::Ptr &rtp, int track_idx) {
+    _input_progress.onAcceptedRtp(getCurrentMillisecond());
     auto &rtcp_ctx = _rtcp_context[track_idx];
     rtcp_ctx->onRtp(rtp->getSeq(), rtp->getStamp(), rtp->ntp_stamp, rtp->sample_rate, rtp->size() - RtpPacket::kRtpTcpHeaderSize);
 
@@ -877,6 +883,20 @@ void RtspPlayer::onPlayResult_l(const SockException &ex, bool handshake_done) {
                 return false;
             }
             if (strongSelf->_rtp_recv_ticker.elapsedTime() > timeoutMS) {
+                // 기존 timeout 발생 때 한 줄만 추가한다. TCP 수신/정렬 전후를
+                // 구분하여 'receive rtp timeout'을 곧바로 원본 무전송으로 오해하지 않는다.
+                const auto now = getCurrentMillisecond();
+                const auto &p = strongSelf->_input_progress;
+                WarnL << "[rtsp-input-boundary] stream="
+                      << safeRtspDiagnosticStream((*strongSelf)[kRtspDiagnosticStream])
+                      << ", route=" << safeRtspDiagnosticRoute((*strongSelf)[kRtspDiagnosticRoute])
+                      << ", tcp=" << (strongSelf->_rtp_type == Rtsp::RTP_TCP)
+                      << ", tcp_reads=" << p.tcp_reads << ", tcp_bytes=" << p.tcp_bytes
+                      << ", framed_rtp=" << p.framed_rtp << ", accepted_rtp=" << p.accepted_rtp << ", sorted_rtp=" << p.sorted_rtp
+                      << ", tcp_age_ms=" << RtspInputProgress::age(now,p.tcp_at)
+                      << ", framed_age_ms=" << RtspInputProgress::age(now,p.framed_at)
+                      << ", accepted_age_ms=" << RtspInputProgress::age(now,p.rtp_at)
+                      << ", sorted_age_ms=" << RtspInputProgress::age(now,p.sorted_at);
                 // 接收rtp媒体数据包超时  [AUTO-TRANSLATED:601b8c0c]
                 // Receive RTP media data packet timeout
                 strongSelf->onPlayResult_l(SockException(Err_timeout, "receive rtp timeout"), true);

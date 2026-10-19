@@ -20,6 +20,7 @@
 #include "Network/TcpClient.h"
 #include "RtspSplitter.h"
 #include "RtpReceiver.h"
+#include "RtspInputProgress.h"
 #include "Rtcp/RtcpContext.h"
 
 namespace mediakit {
@@ -201,6 +202,7 @@ private:
     // 超时功能实现  [AUTO-TRANSLATED:1d603b3a]
     // Timeout function implementation
     toolkit::Ticker _rtp_recv_ticker;
+    RtspInputProgress _input_progress;
     std::shared_ptr<toolkit::Timer> _play_check_timer;
     std::shared_ptr<toolkit::Timer> _rtp_check_timer;
     // 服务器支持的命令  [AUTO-TRANSLATED:f7f589bf]
