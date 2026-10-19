@@ -63,6 +63,7 @@ private:
     bool _fu_dropped = true;
     bool _malformed_payload_logged = false; // 디코더 인스턴스당 한 번만 경고한다.
     uint16_t _last_seq = 0;
+    bool _have_last_seq = false; // 순번0도 정상 패킷 번호다.
     H264Frame::Ptr _frame;
     DtsGenerator _dts_generator;
 };

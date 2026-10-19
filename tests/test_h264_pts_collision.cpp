@@ -129,6 +129,66 @@ static bool malformedPayloads() {
     return ok;
 }
 
+static bool gapRecovery() {
+    bool ok=true;
+    auto check=[&](bool pass,const char *name){std::cout<<name<<" result="<<(pass?"PASS":"FAIL")<<'\n';ok=ok&&pass;};
+    const char key[]={0x65,char(0x80)},p[]={0x61,char(0x80)};
+    {
+        H264RtpDecoder decoder;RtpInfo info(21,1400,90000,96,0,0);int pictures=0;
+        decoder.addDelegate([&](const Frame::Ptr &f){if(!f->configFrame())++pictures;return true;});
+        decoder.inputRtp(info.makeRtp(TrackVideo,key,sizeof(key),true,1000));
+        decoder.inputRtp(info.makeRtp(TrackVideo,p,sizeof(p),true,1040));
+        info.makeRtp(TrackVideo,p,sizeof(p),true,1080); // 이 진단 소유 시료만 유실시킨다.
+        decoder.inputRtp(info.makeRtp(TrackVideo,key,sizeof(key),true,1120));
+        decoder.inputRtp(info.makeRtp(TrackVideo,p,sizeof(p),true,1160));
+        check(pictures==4,"sequence_gap_idr_recovers_before_following_p_picture");
+    }
+    {
+        H264RtpDecoder decoder;RtpInfo info(22,1400,90000,96,0,0);int pictures=0;
+        decoder.addDelegate([&](const Frame::Ptr &f){if(!f->configFrame())++pictures;return true;});
+        decoder.inputRtp(info.makeRtp(TrackVideo,key,sizeof(key),true,1000));
+        decoder.inputRtp(info.makeRtp(TrackVideo,p,sizeof(p),true,1040));
+        info.makeRtp(TrackVideo,p,sizeof(p),true,1080);
+        decoder.inputRtp(info.makeRtp(TrackVideo,p,sizeof(p),true,1120));
+        check(pictures==2,"sequence_gap_rejects_dependent_picture_before_output");
+        decoder.inputRtp(info.makeRtp(TrackVideo,key,sizeof(key),true,1160));
+        decoder.inputRtp(info.makeRtp(TrackVideo,p,sizeof(p),true,1200));
+        check(pictures==4,"sequence_gap_recovers_exactly_on_next_complete_idr");
+    }
+    {
+        H264RtpDecoder decoder;RtpInfo info(23,1400,90000,96,0,0);int pictures=0;
+        decoder.addDelegate([&](const Frame::Ptr &f){if(!f->configFrame())++pictures;return true;});
+        decoder.inputRtp(info.makeRtp(TrackVideo,key,sizeof(key),true,1000));
+        decoder.inputRtp(info.makeRtp(TrackVideo,p,sizeof(p),true,1040));
+        info.makeRtp(TrackVideo,p,sizeof(p),true,1080);
+        const char start[]={0x7c,char(0x85),char(0x80)},end[]={0x7c,0x45,0};
+        decoder.inputRtp(info.makeRtp(TrackVideo,start,sizeof(start),false,1120));
+        decoder.inputRtp(info.makeRtp(TrackVideo,end,sizeof(end),true,1120));
+        decoder.inputRtp(info.makeRtp(TrackVideo,p,sizeof(p),true,1160));
+        check(pictures==4,"sequence_gap_keeps_complete_fragmented_idr_recovery");
+    }
+    {
+        H264RtpDecoder decoder;RtpInfo info(24,1400,90000,96,0,0);int pictures=0;
+        decoder.addDelegate([&](const Frame::Ptr &f){if(!f->configFrame())++pictures;return true;});
+        decoder.inputRtp(info.makeRtp(TrackVideo,key,sizeof(key),true,1000)); // 순번0
+        info.makeRtp(TrackVideo,p,sizeof(p),true,1040);
+        decoder.inputRtp(info.makeRtp(TrackVideo,p,sizeof(p),true,1080));
+        check(pictures==1,"sequence_zero_is_valid_history_for_gap_detection");
+        decoder.inputRtp(info.makeRtp(TrackVideo,key,sizeof(key),true,1120));
+        decoder.inputRtp(info.makeRtp(TrackVideo,p,sizeof(p),true,1160));
+        check(pictures==3,"sequence_zero_gap_recovers_without_extra_gop_wait");
+    }
+    {
+        H264RtpDecoder decoder;RtpInfo info(25,1400,90000,96,0,0);int pictures=0;
+        decoder.addDelegate([&](const Frame::Ptr &f){if(!f->configFrame())++pictures;return true;});
+        auto first=info.makeRtp(TrackVideo,key,sizeof(key),true,1000);first->getHeader()->seq=htons(65535);decoder.inputRtp(first);
+        auto second=info.makeRtp(TrackVideo,p,sizeof(p),true,1040);second->getHeader()->seq=htons(0);decoder.inputRtp(second);
+        auto third=info.makeRtp(TrackVideo,p,sizeof(p),true,1080);third->getHeader()->seq=htons(1);decoder.inputRtp(third);
+        check(pictures==3,"sequence_wrap_keeps_contiguous_pictures");
+    }
+    return ok;
+}
+
 int main() {
     mINI::Instance()[General::kMergeWriteMS] = 0;
     mINI::Instance()[Rtsp::kLowLatency] = 0;
@@ -140,5 +200,6 @@ int main() {
     ok = run("reordered_pts_unchanged", {1000,1080,1040,1160,1120,1200}, false, true) && ok;
     ok = run("low_latency_unchanged", {1000,1040,1080,1120,1160,1200}, false, false, true) && ok;
     ok = malformedPayloads() && ok;
+    ok = gapRecovery() && ok;
     return ok ? 0 : 1;
 }

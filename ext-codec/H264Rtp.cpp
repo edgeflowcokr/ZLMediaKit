@@ -46,12 +46,16 @@ H264Frame::Ptr H264RtpDecoder::obtainFrame() {
 bool H264RtpDecoder::inputRtp(const RtpPacket::Ptr &rtp, bool key_pos) {
     auto seq = rtp->getSeq();
     auto last_is_gop = _is_gop;
-    _is_gop = decodeRtp(rtp);
-    if (!_gop_dropped && seq != (uint16_t)(_last_seq + 1) && _last_seq) {
+    // 유실은 현재 패킷의 출력보다 먼저 판정한다. 뒤에서 판정하면 유실 직후의
+    // 의존 P 그림을 먼저 보내거나, 정상 IDR로 복구한 GOP를 다시 차단하게 된다.
+    if (!_gop_dropped && _have_last_seq && seq != (uint16_t)(_last_seq + 1)) {
         _gop_dropped = true;
-        WarnL << "start drop h264 gop, last seq:" << _last_seq << ", rtp:\r\n" << rtp->dumpString();
+        WarnL << "start drop h264 gop, last_seq=" << _last_seq << ", seq=" << seq << ", ssrc=" << rtp->getSSRC();
     }
+    _is_gop = decodeRtp(rtp);
+    // FU 조립의 연속성 검사는 이전 패킷 번호를 사용해야 하므로 갱신은 뒤에 둔다.
     _last_seq = seq;
+    _have_last_seq = true;
     // 确保有sps rtp的时候，gop从sps开始；否则从关键帧开始  [AUTO-TRANSLATED:115ae07c]
     // cpp
 // Ensure that when there is sps rtp, the gop starts from sps; otherwise, it starts from the key frame
@@ -232,7 +236,7 @@ void H264RtpDecoder::outputFrame(const RtpPacket::Ptr &rtp, const H264Frame::Ptr
 
     if (frame->keyFrame() && _gop_dropped) {
         _gop_dropped = false;
-        InfoL << "new gop received, rtp:\r\n" << rtp->dumpString();
+        InfoL << "new gop received, seq=" << rtp->getSeq() << ", ssrc=" << rtp->getSSRC();
     }
     if (!_gop_dropped || frame->configFrame()) {
         RtpCodec::inputFrame(frame);
