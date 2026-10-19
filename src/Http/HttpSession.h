@@ -175,6 +175,16 @@ private:
     toolkit::Ticker _ticker;
     TSMediaSource::RingType::RingReader::Ptr _ts_reader;
     FMP4MediaSource::RingType::RingReader::Ptr _fmp4_reader;
+    // source를 살려 두지 않고 상수 크기 atomic 진단만 연결 생애 동안 보존한다.
+    std::shared_ptr<LiveFmp4Diagnostic> _fmp4_source_diagnostic;
+    std::weak_ptr<FMP4MediaSource> _fmp4_diagnostic_source;
+    LiveFmp4Snapshot _fmp4_source_begin;
+    std::string _fmp4_diagnostic_stream;
+    uint64_t _fmp4_callbacks=0,_fmp4_packets=0,_fmp4_translated=0,_fmp4_skipped=0;
+    uint64_t _fmp4_writes=0,_fmp4_write_bytes=0,_fmp4_send_failures=0;
+    uint64_t _fmp4_callback_at=0,_fmp4_write_at=0,_fmp4_begin_at=0;
+    bool _fmp4_diagnostic_logged=false;
+    bool _fmp4_diagnostic_attached=false;
     // 处理content数据的callback  [AUTO-TRANSLATED:38890e8d]
     // Callback to handle content data
     std::function<bool (const char *data,size_t len) > _on_recv_body;

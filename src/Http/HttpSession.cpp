@@ -16,6 +16,7 @@
 #include "HttpSession.h"
 #include "HttpConst.h"
 #include "FMP4/HttpFmp4Timeline.h"
+#include "Rtsp/RtspInputProgress.h"
 #include "Util/base64.h"
 #include "Util/SHA1.h"
 
@@ -232,6 +233,35 @@ void HttpSession::onRecv(const Buffer::Ptr &pBuf) {
 }
 
 void HttpSession::onError(const SockException &err) {
+    if (_fmp4_source_diagnostic && !_fmp4_diagnostic_logged) {
+        _fmp4_diagnostic_logged=true;
+        const auto end=_fmp4_source_diagnostic->snapshot();
+        const auto &begin=_fmp4_source_begin;
+        const auto now=getCurrentMillisecond();
+        const auto delta=LiveFmp4Diagnostic::delta;
+        // 모든 HTTP 종료에 한 번. 다른 독자가 남아 있어도 이 연결의 실제
+        // 활성 구간 누계 차이로 비교한다. queue는 패킷 수이지 송신/ACK 바이트가 아니다.
+        WarnL << "[http-fmp4-boundary] stream=" << _fmp4_diagnostic_stream
+              << ", attached=" << _fmp4_diagnostic_attached << ", source_alive=" << !_fmp4_diagnostic_source.expired()
+              << ", lifetime_ms=" << RtspInputProgress::age(now,_fmp4_begin_at)
+              << ", input=" << delta(end.input,begin.input) << ", enabled=" << delta(end.enabled,begin.enabled)
+              << ", no_init=" << delta(end.no_init,begin.no_init) << ", missing_track=" << delta(end.missing_track,begin.missing_track)
+              << ", waiting_key=" << delta(end.waiting_key,begin.waiting_key) << ", merged=" << delta(end.merged,begin.merged)
+              << ", stamp_rejected=" << delta(end.stamp_rejected,begin.stamp_rejected)
+              << ", writer_failed=" << delta(end.writer_failed,begin.writer_failed) << ", empty_output=" << delta(end.empty_output,begin.empty_output)
+              << ", fragments=" << delta(end.fragments,begin.fragments) << ", ring_batches=" << delta(end.ring_batches,begin.ring_batches)
+              << ", ring_generation_begin=" << begin.ring_generation << ", ring_generation_end=" << end.ring_generation
+              << ", callbacks=" << _fmp4_callbacks << ", packets=" << _fmp4_packets
+              << ", translated=" << _fmp4_translated << ", skipped=" << _fmp4_skipped
+              << ", writes=" << _fmp4_writes << ", write_bytes=" << _fmp4_write_bytes << ", send_failed=" << _fmp4_send_failures
+              << ", input_age_ms=" << RtspInputProgress::age(now,end.input_at)
+              << ", enabled_age_ms=" << RtspInputProgress::age(now,end.enabled_at)
+              << ", fragment_age_ms=" << RtspInputProgress::age(now,end.fragment_at)
+              << ", ring_age_ms=" << RtspInputProgress::age(now,end.ring_at)
+              << ", callback_age_ms=" << RtspInputProgress::age(now,_fmp4_callback_at)
+              << ", write_age_ms=" << RtspInputProgress::age(now,_fmp4_write_at)
+              << ", send_queue_packets=" << getSock()->getSendBufferCount();
+    }
     if (_is_live_stream) {
         // flv/ts播放器  [AUTO-TRANSLATED:5b444fd9]
         // flv/ts player
@@ -441,6 +471,11 @@ bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
     return checkLiveStream(FMP4_SCHEMA, ".live.mp4", [this, cb](const MediaSource::Ptr &src) {
         auto fmp4_src = dynamic_pointer_cast<FMP4MediaSource>(src);
         assert(fmp4_src);
+        _fmp4_source_diagnostic=fmp4_src->getLiveDiagnostic();
+        _fmp4_diagnostic_source=fmp4_src;
+        _fmp4_source_begin=_fmp4_source_diagnostic->snapshot();
+        _fmp4_diagnostic_stream=safeRtspDiagnosticStream(fmp4_src->getMediaTuple().stream);
+        _fmp4_begin_at=_fmp4_callback_at=_fmp4_write_at=getCurrentMillisecond();
         if (!cb) {
             // 找到源，发送http头，负载后续发送  [AUTO-TRANSLATED:ac272410]
             // Found the source, send the http header, and send the load later
@@ -469,6 +504,7 @@ bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
         weak_ptr<HttpSession> weak_self = static_pointer_cast<HttpSession>(shared_from_this());
         fmp4_src->pause(false);
         _fmp4_reader = fmp4_src->getRing()->attach(getPoller());
+        _fmp4_diagnostic_attached=true;
         _fmp4_reader->setGetInfoCB([weak_self]() {
             Any ret;
             ret.set(static_pointer_cast<Session>(weak_self.lock()));
@@ -490,10 +526,13 @@ bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
                 // This object has been destroyed
                 return;
             }
+            ++strong_self->_fmp4_callbacks;
+            strong_self->_fmp4_callback_at=getCurrentMillisecond();
             if (*timeline_failed) return;
             size_t i = 0;
             auto size = fmp4_list->size();
             fmp4_list->for_each([&](const FMP4Packet::Ptr &packet) {
+                ++strong_self->_fmp4_packets;
                 ++i;
                 if (*timeline_failed) return;
                 if (!timeline->active()) {
@@ -501,7 +540,7 @@ bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
                     return;
                 }
                 if (timeline->waitingForRandomAccess()) {
-                    if (!timeline->acceptRandomAccess(packet->key_frame)) return;
+                    if (!timeline->acceptRandomAccess(packet->key_frame)) { ++strong_self->_fmp4_skipped; return; }
                     if (timeline->skippedPreroll()) {
                         DebugP(strong_self) << "HTTP fMP4 starts at first random-access picture, skipped_preroll="
                                            << timeline->skippedPreroll();
@@ -515,6 +554,7 @@ bool HttpSession::checkLiveStreamFMP4(const function<void()> &cb) {
                     strong_self->shutdown(SockException(Err_shutdown, "fmp4 connection timeline discontinuity"));
                     return;
                 }
+                ++strong_self->_fmp4_translated;
                 strong_self->onWrite(std::make_shared<BufferString>(std::move(translated)), i == size);
             });
         });
@@ -959,6 +999,11 @@ void HttpSession::setSocketFlags() {
 }
 
 void HttpSession::onWrite(const Buffer::Ptr &buffer, bool flush) {
+    if (_fmp4_source_diagnostic) {
+        ++_fmp4_writes;
+        _fmp4_write_bytes+=buffer->size();
+        _fmp4_write_at=getCurrentMillisecond();
+    }
     if (flush) {
         // 需要flush那么一次刷新缓存  [AUTO-TRANSLATED:8d1ec961]
         // Need to flush, then flush the cache once
@@ -968,7 +1013,8 @@ void HttpSession::onWrite(const Buffer::Ptr &buffer, bool flush) {
     _ticker.resetTime();
     if (!_live_over_websocket) {
         _total_bytes_usage += buffer->size();
-        send(buffer);
+        const auto send_result=send(buffer);
+        if (_fmp4_source_diagnostic && send_result<0) ++_fmp4_send_failures;
     } else {
         WebSocketHeader header;
         header._fin = true;

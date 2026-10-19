@@ -106,6 +106,7 @@ void MP4MuxerInterface::flush() {
 bool MP4MuxerInterface::inputFrame(const Frame::Ptr &frame) {
     auto it = _tracks.find(frame->getIndex());
     if (it == _tracks.end()) {
+        if (_live_diagnostic) ++_live_diagnostic->missing_track;
         // 该Track不存在或初始化失败  [AUTO-TRANSLATED:316597dc]
         // This Track does not exist or initialization failed
         return false;
@@ -115,6 +116,7 @@ bool MP4MuxerInterface::inputFrame(const Frame::Ptr &frame) {
         // 该逻辑确保含有视频时，第一帧为关键帧  [AUTO-TRANSLATED:04f177fb]
         // This logic ensures that the first frame is a keyframe when there is video
         if (_have_video && !frame->keyFrame()) {
+            if (_live_diagnostic) ++_live_diagnostic->waiting_key;
             // 含有视频，但是不是关键帧，那么前面的帧丢弃  [AUTO-TRANSLATED:5f0ba99e]
             // Contains video, but not a keyframe, then the previous frames are discarded
             return false;
@@ -151,11 +153,13 @@ bool MP4MuxerInterface::inputFrame(const Frame::Ptr &frame) {
             const bool h264 = frame->getCodecId() == CodecH264;
             const bool lookahead = singleH264SampleLookahead(frame->getCodecId());
             track.merger.inputFrame(frame, [this, &track, h264, lookahead](uint64_t dts, uint64_t pts, const Buffer::Ptr &buffer, bool have_idr) {
+                if (_live_diagnostic) ++_live_diagnostic->merged;
                 int64_t dts_out, pts_out;
                 track.stamp.revise(dts, pts, dts_out, pts_out);
                 if (h264) {
                     const auto original_dts = dts_out;
                     if (!track.h264_sample_stamp.revise(dts_out, pts_out)) {
+                        if (_live_diagnostic) ++_live_diagnostic->stamp_rejected;
                         if (!track.h264_stamp_failure_logged) {
                             WarnL << "H264 MP4 sample timestamp cannot advance safely: track=" << track.track_id;
                             track.h264_stamp_failure_logged = true;
@@ -179,7 +183,9 @@ bool MP4MuxerInterface::inputFrame(const Frame::Ptr &frame) {
                 // change in cadence even when all sample bytes were intact.
                 const auto flags = (have_idr ? MOV_AV_FLAG_KEYFREAME : 0)
                     | (lookahead ? MOV_AV_FLAG_SEGMENT_FORCE : 0);
-                mp4_writer_write(_mov_writter.get(), track.track_id, buffer->data(), buffer->size(), pts_out, dts_out, flags);
+                const auto write_result=mp4_writer_write(_mov_writter.get(), track.track_id, buffer->data(), buffer->size(), pts_out, dts_out, flags);
+                // 기존 쓰기/반환 동작은 유지하고 라이브 진단에만 실패 누계를 남긴다.
+                if (_live_diagnostic && write_result!=0) ++_live_diagnostic->writer_failed;
                 if (lookahead) onLookaheadSampleMuxed(uint64_t(dts_out), have_idr);
             });
             break;
@@ -290,6 +296,7 @@ void MP4MuxerMemory::resetTracks() {
 
 bool MP4MuxerMemory::inputFrame(const Frame::Ptr &frame) {
     if (_init_segment.empty()) {
+        if (_live_diagnostic) ++_live_diagnostic->no_init;
         // 尚未生成init segment  [AUTO-TRANSLATED:b4baa65f]
         // Init segment has not been generated yet
         return false;
@@ -326,6 +333,7 @@ void MP4MuxerMemory::onLookaheadSampleMuxed(uint64_t dts, bool key_frame) {
     // newly queued one. Preserve that picture's GOP marker and timestamp.
     auto data = _memory_file->getAndClearMemory();
     if (!data.empty()) onSegmentData(std::move(data), _last_dst, _key_frame);
+    else if (_live_diagnostic) ++_live_diagnostic->empty_output;
     _last_dst = dts;
     _key_frame = key_frame;
 }

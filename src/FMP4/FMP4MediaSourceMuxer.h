@@ -26,6 +26,7 @@ public:
         _option = option;
         setSingleH264SampleLookahead(true);
         _media_src = std::make_shared<FMP4MediaSource>(tuple);
+        setLiveDiagnostic(_media_src->getLiveDiagnostic());
     }
 
     ~FMP4MediaSourceMuxer() override {
@@ -59,6 +60,8 @@ public:
     }
 
     bool inputFrame(const Frame::Ptr &frame) override {
+        ++_live_diagnostic->input;
+        _live_diagnostic->input_at.store(toolkit::getCurrentMillisecond(),std::memory_order_relaxed);
         ++_input_frames;
         _input_ticker.resetTime();
         refreshDemand(_media_src->readerCount());
@@ -67,6 +70,8 @@ public:
             _media_src->clearCache();
         }
         if (_enabled || !_option.fmp4_demand) {
+            ++_live_diagnostic->enabled;
+            _live_diagnostic->enabled_at.store(toolkit::getCurrentMillisecond(),std::memory_order_relaxed);
             return MP4MuxerMemory::inputFrame(frame);
         }
         return false;

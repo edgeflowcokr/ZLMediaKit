@@ -14,6 +14,7 @@
 #include "Common/MediaSource.h"
 #include "Common/PacketCache.h"
 #include "Util/RingBuffer.h"
+#include "Common/LiveFmp4Diagnostic.h"
 
 #define FMP4_GOP_SIZE 512
 
@@ -62,6 +63,7 @@ public:
     const RingType::Ptr &getRing() const {
         return _ring;
     }
+    const std::shared_ptr<LiveFmp4Diagnostic> &getLiveDiagnostic() const { return _live_diagnostic; }
 
     void getPlayerList(const std::function<void(const std::list<toolkit::Any> &info_list)> &cb,
                        const std::function<toolkit::Any(toolkit::Any &&info)> &on_change) override {
@@ -112,6 +114,8 @@ public:
      * [AUTO-TRANSLATED:3b310b27]
      */
     void onWrite(FMP4Packet::Ptr packet, bool key) override {
+        ++_live_diagnostic->fragments;
+        _live_diagnostic->fragment_at.store(toolkit::getCurrentMillisecond(),std::memory_order_relaxed);
         packet->key_frame = key;
         if (!_ring) {
             createRing();
@@ -137,6 +141,7 @@ public:
 
 private:
     void createRing(){
+        ++_live_diagnostic->ring_generation;
         std::weak_ptr<FMP4MediaSource> weak_self = std::static_pointer_cast<FMP4MediaSource>(shared_from_this());
         _ring = std::make_shared<RingType>(_ring_size, [weak_self](int size) {
             auto strong_self = weak_self.lock();
@@ -161,6 +166,8 @@ private:
      * [AUTO-TRANSLATED:6e93913e]
      */
     void onFlush(std::shared_ptr<toolkit::List<FMP4Packet::Ptr> > packet_list, bool key_pos) override {
+        ++_live_diagnostic->ring_batches;
+        _live_diagnostic->ring_at.store(toolkit::getCurrentMillisecond(),std::memory_order_relaxed);
         // 如果不存在视频，那么就没有存在GOP缓存的意义，所以确保一直清空GOP缓存  [AUTO-TRANSLATED:66208f94]
         // If there is no video, then there is no meaning to the existence of GOP cache, so make sure to clear the GOP cache all the time
         _ring->write(std::move(packet_list), _have_video ? key_pos : true);
@@ -171,6 +178,7 @@ private:
     int _ring_size;
     std::string _init_segment;
     RingType::Ptr _ring;
+    std::shared_ptr<LiveFmp4Diagnostic> _live_diagnostic=std::make_shared<LiveFmp4Diagnostic>();
 };
 
 

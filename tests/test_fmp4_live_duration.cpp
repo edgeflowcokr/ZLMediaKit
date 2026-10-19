@@ -81,7 +81,11 @@ static void demandReordering() {
         check(source->readerCount()==0,"real_fmp4_ring_reader_detaches");
         // 마지막 독자가 떠난 뒤에 옛 1명 알림이 와도 불필요하게 켜지면 안 된다.
         mux->onReaderChanged(*source,1);
+        const auto idle_begin=source->getLiveDiagnostic()->snapshot();
         check(!mux->inputFrame(nal(1080,true)),"stale_one_notification_does_not_enable_readerless_mux");
+        const auto idle_end=source->getLiveDiagnostic()->snapshot();
+        check(idle_end.input==idle_begin.input+1&&idle_end.enabled==idle_begin.enabled,
+              "diagnostic_separates_readerless_input_from_enabled_input");
         auto replacement=source->getRing()->attach(poller,false);
         replacement->setReadCB([](const FMP4MediaSource::RingDataType &){});
         mux->onReaderChanged(*source,0);
@@ -98,6 +102,44 @@ static void demandReordering() {
         always->onReaderChanged(*source,0);
         check(always->inputFrame(nal(1000,true)),"demand_disabled_policy_is_unchanged");
         always.reset();
+    });
+}
+static void liveDiagnosticGates() {
+    auto poller=EventPollerPool::Instance().getPoller();
+    auto events=std::make_shared<DemandEvents>(poller);
+    ProtocolOption option;option.fmp4_demand=false;
+    auto mux=std::make_shared<FMP4MediaSourceMuxer>(MediaTuple{"__defaultVhost__","diagnostic-test","local-only",""},option);
+    mux->setListener(events);
+    poller->sync([&] {
+        auto source=std::dynamic_pointer_cast<FMP4MediaSource>(mux->getMediaSource());
+        auto progress=source->getLiveDiagnostic();
+        check(!mux->inputFrame(nal(1000,true))&&progress->snapshot().no_init==1,
+              "diagnostic_counts_actual_missing_init_rejection");
+        mux->addTrack(video());mux->addTrackCompleted();
+        check(!mux->inputFrame(nal(1040,false))&&progress->snapshot().waiting_key==1,
+              "diagnostic_counts_actual_random_access_wait");
+        auto bad=nal(1080,true);bad->setIndex(1);
+        check(!mux->inputFrame(bad)&&progress->snapshot().missing_track==1,
+              "diagnostic_counts_actual_track_index_rejection");
+        mux->inputFrame(nal(1120,true));mux->inputFrame(nal(1160,false));mux->inputFrame(nal(1200,false));mux->flush();
+        const auto active=progress->snapshot();
+        check(active.merged>=2&&active.fragments>=2&&active.ring_batches>0,
+              "diagnostic_counts_production_mux_and_ring_outputs");
+        check(active.writer_failed==0&&active.stamp_rejected==0&&active.enabled==active.input,
+              "diagnostic_healthy_inputs_do_not_report_writer_or_stamp_failure");
+        const auto now=getCurrentMillisecond();
+        check(active.ring_generation==1&&active.input_at<=now&&active.enabled_at<=now&&active.fragment_at<=now&&active.ring_at<=now,
+              "diagnostic_records_generation_and_monotonic_stage_times");
+        const auto begin=progress->snapshot();
+        mux->inputFrame(nal(1240,false));mux->inputFrame(nal(1280,false));
+        const auto end=progress->snapshot();
+        check(LiveFmp4Diagnostic::delta(end.input,begin.input)==2&&LiveFmp4Diagnostic::delta(end.enabled,begin.enabled)==2,
+              "diagnostic_connection_baseline_excludes_earlier_input_history");
+        check(LiveFmp4Diagnostic::delta(0,10)==0,"diagnostic_counter_reset_is_not_unsigned_underflow");
+        std::weak_ptr<FMP4MediaSource> weak_source=source;
+        mux.reset();source.reset();
+        check(weak_source.expired()&&progress->snapshot().input==end.input,
+              "diagnostic_snapshot_survives_source_without_keeping_source_alive");
     });
 }
 static void run(const std::vector<uint64_t> &stamps,const char *name,size_t key_interval=4) {
@@ -179,6 +221,7 @@ static void rtspDemandReordering() {
 }
 int main(){
     demandReordering();
+    liveDiagnosticGates();
     rtspDemandReordering();
     run({0,40,41,100,800,801,820,860,1000,1001},"irregular_cadence_fragment_ends_at_exact_next_dts");
     run({0,40,80,120,160,200,240,280,320,360},"constant_cadence_is_unchanged");

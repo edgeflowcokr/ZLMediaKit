@@ -17,6 +17,7 @@
 #include "Common/Stamp.h"
 #include "MP4.h"
 #include "Common/VideoSampleStamp.h"
+#include "Common/LiveFmp4Diagnostic.h"
 
 namespace mediakit {
 
@@ -94,6 +95,8 @@ public:
     uint64_t getDuration() const;
 
 protected:
+    void setLiveDiagnostic(const std::shared_ptr<LiveFmp4Diagnostic> &diagnostic) { _live_diagnostic=diagnostic; }
+    std::shared_ptr<LiveFmp4Diagnostic> _live_diagnostic;
     virtual MP4FileIO::Writer createWriter() = 0;
     // Only the live HTTP fMP4 source opts in. Disk/HLS and multi-track A/V
     // retain their existing fragment policy.
