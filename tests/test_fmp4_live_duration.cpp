@@ -1,5 +1,6 @@
 #include "Record/MP4Muxer.h"
 #include "FMP4/FMP4MediaSourceMuxer.h"
+#include "Rtsp/RtspMediaSourceMuxer.h"
 #include "Poller/EventPoller.h"
 #include "ext-codec/H264.h"
 #include "ext-codec/AAC.h"
@@ -113,8 +114,72 @@ static void run(const std::vector<uint64_t> &stamps,const char *name,size_t key_
     }
     check(exact,name);check(markers,"completed_segment_keeps_previous_picture_gop_marker");check(metadata,"completed_segment_stamp_matches_previous_picture");
 }
+static void rtspDemandReordering() {
+    auto poller=EventPollerPool::Instance().getPoller();
+    auto events=std::make_shared<DemandEvents>(poller);
+    ProtocolOption option; option.rtsp_demand=true;
+    auto mux=std::make_shared<RtspMediaSourceMuxer>(MediaTuple{"__defaultVhost__","demand-test","rtsp-local-only",""},option);
+    mux->setListener(events);
+    poller->sync([&] {
+        check(mux->addTrack(video()),"real_rtsp_demand_fixture_has_ready_video"); mux->addTrackCompleted();
+        // RTSP ring은 첫 패킷을 수신할 때 생성된다. 시험에서는 원래 mux 입력으로 만든다.
+        check(mux->inputFrame(nal(1000,true)),"real_rtsp_demand_fixture_accepts_initial_key_frame");
+        mux->flush();
+        auto source=std::dynamic_pointer_cast<RtspMediaSource>(mux->getMediaSource());
+        check(bool(source->getRing()),"real_rtsp_demand_fixture_has_ring");
+        if(!source->getRing())return;
+        auto reader=source->getRing()->attach(poller,false);
+        reader->setReadCB([](const RtspMediaSource::RingDataType &){});
+        check(source->readerCount()==1,"actual_rtsp_reader_attaches");
+        mux->onReaderChanged(*source,0);
+        check(mux->inputFrame(nal(1040,true)),"stale_zero_keeps_active_rtsp_mux_enabled");
+        mux->onReaderChanged(*source,1);
+        check(mux->inputFrame(nal(1080,true)),"current_reader_keeps_rtsp_input_enabled");
+        mux->inputFrame(nal(1120,false)); mux->flush();
+        auto cached=[&] {size_t n=0;source->getRing()->flushGop([&](const RtspMediaSource::RingDataType &list){n+=list->size();});return n;};
+        const auto before=cached();
+        check(before>0,"actual_rtsp_mux_emits_packets_to_ring");
+        mux->onReaderChanged(*source,0);
+        const auto accepted=mux->inputFrame(nal(1160,false)); mux->flush();
+        check(accepted&&cached()>=before,"stale_zero_preserves_actual_rtsp_gop_output");
+        auto reader2=source->getRing()->attach(poller,false);
+        reader2->setReadCB([](const RtspMediaSource::RingDataType &){});
+        check(source->readerCount()==2,"second_rtsp_reader_attaches");
+        reader2.reset(); mux->onReaderChanged(*source,0);
+        check(source->readerCount()==1&&mux->inputFrame(nal(1200,true)),"remaining_rtsp_reader_survives_old_zero");
+        reader.reset(); check(source->readerCount()==0,"actual_rtsp_reader_detaches");
+        mux->onReaderChanged(*source,1);
+        check(!mux->inputFrame(nal(1240,true)),"stale_one_does_not_enable_readerless_rtsp_mux");
+        auto replacement=source->getRing()->attach(poller,false);
+        replacement->setReadCB([](const RtspMediaSource::RingDataType &){});
+        mux->onReaderChanged(*source,0);
+        check(mux->inputFrame(nal(1280,true)),"replacement_rtsp_reader_recovers_after_actual_zero");
+        replacement.reset();
+        mux->onReaderChanged(*source,0);
+        // 실제 idle의 정리 예약 직후 재접속해도 새 key부터 연속 출력되어야 한다.
+        auto rapid=source->getRing()->attach(poller,false);
+        rapid->setReadCB([](const RtspMediaSource::RingDataType &){});
+        mux->onReaderChanged(*source,1);
+        const auto keyAccepted=mux->inputFrame(nal(1320,true)); mux->flush();
+        check(keyAccepted&&cached()>0,"pending_idle_clear_allows_new_rtsp_key_frame");
+        const auto keyCache=cached();
+        const auto pAccepted=mux->inputFrame(nal(1360,false)); mux->flush();
+        check(pAccepted&&cached()>=keyCache,"pending_idle_clear_does_not_repeat_on_following_rtsp_picture");
+        rapid.reset();
+    });
+    poller->sync([&] {mux.reset();});
+    option.rtsp_demand=false;
+    auto always=std::make_shared<RtspMediaSourceMuxer>(MediaTuple{"__defaultVhost__","demand-test","rtsp-always-on",""},option);
+    always->setListener(events);
+    poller->sync([&] {
+        always->addTrack(video());always->addTrackCompleted();auto source=always->getMediaSource();
+        always->onReaderChanged(*source,0);
+        check(always->inputFrame(nal(1000,true)),"rtsp_demand_disabled_policy_is_unchanged");always.reset();
+    });
+}
 int main(){
     demandReordering();
+    rtspDemandReordering();
     run({0,40,41,100,800,801,820,860,1000,1001},"irregular_cadence_fragment_ends_at_exact_next_dts");
     run({0,40,80,120,160,200,240,280,320,360},"constant_cadence_is_unchanged");
     std::vector<uint64_t> long_gop={0};for(size_t i=1;i<230;++i)long_gop.push_back(long_gop.back()+(i%2?40:1));
