@@ -244,6 +244,12 @@ void HttpSession::onError(const SockException &err) {
         WarnL << "[http-fmp4-boundary] stream=" << _fmp4_diagnostic_stream
               << ", attached=" << _fmp4_diagnostic_attached << ", source_alive=" << !_fmp4_diagnostic_source.expired()
               << ", lifetime_ms=" << RtspInputProgress::age(now,_fmp4_begin_at)
+              << ", before_mux=" << delta(end.before_mux,begin.before_mux)
+              << ", before_mux_age_ms=" << RtspInputProgress::age(now,end.before_mux_at)
+              << ", pipeline_input=" << delta(end.pipeline_input,begin.pipeline_input)
+              << ", pipeline_age_ms=" << RtspInputProgress::age(now,end.pipeline_at)
+              << ", mux_stage=" << end.stage << ", mux_stage_age_ms=" << (end.stage?RtspInputProgress::age(now,end.stage_at):0)
+              << ", paced=" << end.paced
               << ", input=" << delta(end.input,begin.input) << ", enabled=" << delta(end.enabled,begin.enabled)
               << ", no_init=" << delta(end.no_init,begin.no_init) << ", missing_track=" << delta(end.missing_track,begin.missing_track)
               << ", waiting_key=" << delta(end.waiting_key,begin.waiting_key) << ", merged=" << delta(end.merged,begin.merged)

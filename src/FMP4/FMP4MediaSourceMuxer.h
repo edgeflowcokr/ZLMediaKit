@@ -92,6 +92,7 @@ public:
     MediaSource::Ptr getMediaSource() const {
         return _media_src;
     }
+    const std::shared_ptr<LiveFmp4Diagnostic> &getLiveDiagnostic() const { return _live_diagnostic; }
 
 protected:
     void onSegmentData(std::string string, uint64_t stamp, bool key_frame) override {

@@ -6,6 +6,8 @@
 #include "ext-codec/AAC.h"
 #include "Util/util.h"
 #include "Util/base64.h"
+#include "FMP4/FMP4MediaSource.h"
+#include "FMP4/HttpFmp4Timeline.h"
 
 using namespace mediakit;
 using namespace toolkit;
@@ -42,6 +44,61 @@ static void expect(bool ok,const char* name) {
 static Track::Ptr video(const std::string& pps="aO48gA==") {
     auto t=std::make_shared<H264Track>(decodeBase64("Z00AM4qKUDwBE/Kg"),decodeBase64(pps),0,0);
     t->setIndex(0); return t;
+}
+static Frame::Ptr picture(uint64_t stamp,bool key) {
+    auto f=FrameImp::create<H264Frame>();f->_prefix_size=4;f->_buffer.assign("\0\0\0\1",4);
+    f->_buffer.push_back(key?'\x65':'\x61');f->_buffer.push_back('\x80');f->_pts=f->_dts=stamp;return f;
+}
+static void liveFmp4Reconnect(const ProtocolOption &base) {
+    auto option=base;option.enable_fmp4=true;option.fmp4_demand=true;option.enable_audio=false;
+    auto p=std::make_shared<FixtureProxy>(MediaTuple{DEFAULT_VHOST,"test","fmp4-continuity",""},option,-1,nullptr,60,60,60);
+    auto input=std::make_shared<FixtureInput>();input->tracks={video()};
+    FMP4MediaSource::Ptr source;FMP4MediaSource::RingType::RingReader::Ptr reader;
+    size_t delivered=0,before=0;bool translated_ok=true;
+    auto attach=[&] {
+        auto timeline=std::make_shared<HttpFmp4Timeline>();
+        translated_ok=translated_ok&&timeline->configure(source->getInitSegment());
+        timeline->requireRandomAccess(true);
+        reader=source->getRing()->attach(p->getPoller(),false);
+        reader->setReadCB([&,timeline](const FMP4MediaSource::RingDataType &batch) {
+            batch->for_each([&](const FMP4Packet::Ptr &packet) {
+                if (timeline->waitingForRandomAccess()&&!timeline->acceptRandomAccess(packet->key_frame))return;
+                std::string bytes;translated_ok=timeline->translate(packet->toString(),bytes)&&translated_ok;++delivered;
+            });
+        });
+    };
+    auto feed=[&](uint64_t epoch) {for(size_t i=0;i<12;++i)input->tracks[0]->inputFrame(picture(epoch+i*40,i%4==0));};
+    p->getPoller()->sync([&] {
+        p->play("fixture://fmp4-continuity");p->inject(input);(p.get()->*access(SuccessTag{}))();feed(10000);
+        source=std::dynamic_pointer_cast<FMP4MediaSource>(MediaSource::find(FMP4_SCHEMA,DEFAULT_VHOST,"test","fmp4-continuity",false));
+        expect(bool(source),"fmp4_proxy_fixture_registers_real_fmp4_source");
+        if(source){attach();feed(11000);}
+    });
+    p->getPoller()->sync([&] {
+        if(!source)return;
+        expect(delivered>0&&translated_ok,"fmp4_proxy_real_reader_receives_translatable_fragments");before=delivered;
+        auto original_ring=source->getRing();p->disconnect();input->tracks={video()};p->inject(input);
+        (p.get()->*access(SuccessTag{}))();feed(1000); // 새 입력 세대의 DTS 원점이 되돌아간다.
+        auto current=MediaSource::find(FMP4_SCHEMA,DEFAULT_VHOST,"test","fmp4-continuity",false);
+        expect(current==source&&source->getRing()==original_ring,"compatible_reconnect_preserves_active_fmp4_source_and_ring");
+    });
+    p->getPoller()->sync([&] {
+        if(!source)return;
+        expect(delivered>before&&translated_ok,"compatible_reconnect_keeps_existing_http_timeline_decodable");
+        const auto active=source->getLiveDiagnostic()->snapshot();reader.reset();feed(100000);
+        const auto idle=source->getLiveDiagnostic()->snapshot();
+        expect(idle.input>active.input&&idle.enabled==active.enabled,"fmp4_proxy_idle_input_is_not_active_mux_input");
+        before=delivered;attach();feed(200000);
+    });
+    p->getPoller()->sync([&] {
+        if(!source)return;
+        const auto end=source->getLiveDiagnostic()->snapshot();
+        expect(delivered>before&&translated_ok,"fmp4_proxy_new_reader_recovers_after_long_idle_epoch");
+        expect(end.ring_generation==1&&end.no_init==0&&end.missing_track==0&&end.writer_failed==0,
+               "fmp4_proxy_reconnect_and_idle_do_not_reset_init_or_lose_track");
+        reader.reset();RtspMediaSource sender({DEFAULT_VHOST,"test","fmp4-continuity",""});
+        (p.get()->*access(CloseTag{}))(sender);source.reset();
+    });
 }
 int main() {
     EventPollerPool::setPoolSize(1);
@@ -97,6 +154,7 @@ int main() {
         expect(!(p.get()->*access(TimerTag{})),"explicit_close_cancels_retry");
         expect(closed==1,"explicit_close_callback_once");
     });
+    liveFmp4Reconnect(option);
     auto terminal=std::make_shared<FixtureProxy>(MediaTuple{DEFAULT_VHOST,"test","terminal",""},option,0);
     terminal->getPoller()->sync([&] {
         terminal->play("fixture://terminal");

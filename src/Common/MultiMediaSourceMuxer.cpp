@@ -1031,6 +1031,12 @@ void MultiMediaSourceMuxer::addProbe(uint32_t probe_ms, const std::function<void
 }
 
 bool MultiMediaSourceMuxer::onTrackFrame(const Frame::Ptr &frame_in) {
+    if (_fmp4) {
+        const auto &diagnostic=_fmp4->getLiveDiagnostic();
+        ++diagnostic->before_mux;
+        diagnostic->before_mux_at.store(getCurrentMillisecond(),std::memory_order_relaxed);
+        diagnostic->paced.store(bool(_paced_sender),std::memory_order_relaxed);
+    }
     if (_on_frame) {
         _on_frame(frame_in);
     }
@@ -1044,36 +1050,46 @@ bool MultiMediaSourceMuxer::onTrackFrame(const Frame::Ptr &frame_in) {
 }
 
 bool MultiMediaSourceMuxer::onTrackFrame_l(const Frame::Ptr &frame_in) {
+    LiveFmp4StageGuard diagnostic(_fmp4?_fmp4->getLiveDiagnostic():nullptr,getCurrentMillisecond());
     auto frame = frame_in;
     bool ret = false;
     if (_rtmp) {
+        diagnostic.stage(1,getCurrentMillisecond());
         ret = _rtmp->inputFrame(frame) ? true : ret;
     }
     if (_rtsp) {
+        diagnostic.stage(2,getCurrentMillisecond());
         ret = _rtsp->inputFrame(frame) ? true : ret;
     }
     if (_ts) {
+        diagnostic.stage(3,getCurrentMillisecond());
         ret = _ts->inputFrame(frame) ? true : ret;
     }
 
     if (_hls) {
+        diagnostic.stage(4,getCurrentMillisecond());
         ret = _hls->inputFrame(frame) ? true : ret;
     }
 
     if (_hls_fmp4) {
+        diagnostic.stage(5,getCurrentMillisecond());
         ret = _hls_fmp4->inputFrame(frame) ? true : ret;
     }
 
     if (_mp4) {
+        diagnostic.stage(6,getCurrentMillisecond());
         ret = _mp4->inputFrame(frame) ? true : ret;
     }
     if (_fmp4) {
+        diagnostic.stage(7,getCurrentMillisecond());
         ret = _fmp4->inputFrame(frame) ? true : ret;
     }
     if (_delegate) {
+        diagnostic.stage(8,getCurrentMillisecond());
         _delegate->inputFrame(frame);
     }
     if (_ring) {
+        diagnostic.stage(9,getCurrentMillisecond());
         // 此场景由于直接转发，可能存在切换线程引起的数据被缓存在管道，所以需要CacheAbleFrame  [AUTO-TRANSLATED:528afbb7]
         // In this scenario, due to direct forwarding, there may be data cached in the pipeline due to thread switching, so CacheAbleFrame is needed
         frame = Frame::getCacheAbleFrame(frame);

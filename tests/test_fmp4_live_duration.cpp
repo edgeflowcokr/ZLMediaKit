@@ -105,6 +105,19 @@ static void demandReordering() {
     });
 }
 static void liveDiagnosticGates() {
+    auto stage_progress=std::make_shared<LiveFmp4Diagnostic>();
+    {
+        LiveFmp4StageGuard stage(stage_progress,100);
+        check(stage_progress->snapshot().pipeline_input==1&&stage_progress->snapshot().stage==10,
+              "diagnostic_pipeline_entry_is_counted_once");
+        stage.stage(4,200);
+        check(stage_progress->snapshot().stage==4&&stage_progress->snapshot().stage_at==200,
+              "diagnostic_current_hls_stage_is_visible_without_waiting_for_return");
+    }
+    check(stage_progress->snapshot().stage==0,"diagnostic_stage_returns_to_idle_after_scope");
+    try { LiveFmp4StageGuard stage(stage_progress,300);stage.stage(6,400);throw std::runtime_error("local fixture"); }
+    catch(const std::runtime_error &) {}
+    check(stage_progress->snapshot().stage==0,"diagnostic_stage_returns_to_idle_after_exception");
     auto poller=EventPollerPool::Instance().getPoller();
     auto events=std::make_shared<DemandEvents>(poller);
     ProtocolOption option;option.fmp4_demand=false;
