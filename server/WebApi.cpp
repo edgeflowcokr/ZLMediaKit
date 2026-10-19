@@ -28,6 +28,7 @@
 #include "Util/logger.h"
 #include "Util/onceToken.h"
 #include "Util/NoticeCenter.h"
+#include "Common/LiveStreamHealth.h"
 #include "Network/TcpServer.h"
 #include "Network/UdpServer.h"
 #include "Thread/WorkThreadPool.h"
@@ -2070,6 +2071,67 @@ void installWebApi() {
 
         val["data"] = ToJson(proxy);
         invoker(200, headerOut, val.toStyledString());
+    });
+
+    // 고정 채널 batch 읽기만. API 인증은 기존 secret 검사와 동일하며 새 시청자를 만들지 않는다.
+    api_regist("/index/api/getLiveStreamHealth", [](API_ARGS_MAP_ASYNC) {
+        CHECK_SECRET();CHECK_ARGS("streams");
+        const std::string encoded=allArgs["streams"];
+        Json::Value streams;Json::Reader parser;
+        if(encoded.size()>32768||!parser.parse(encoded,streams)||!streams.isArray()||streams.empty()||streams.size()>64)
+            throw InvalidArgsException("invalid health stream batch");
+        for(const auto &s:streams) {
+            if(!s.isObject()||!s["channelUid"].isString()||!s["stream"].isString())throw InvalidArgsException("invalid stream identity");
+            const auto uid=s["channelUid"].asString(),kind=s["stream"].asString();
+            if(uid.empty()||uid.size()>96||uid.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")!=std::string::npos||(kind!="main"&&kind!="sub"))throw InvalidArgsException("invalid stream identity");
+        }
+        struct Batch {
+            std::mutex mutex;Json::Value rows;size_t remaining=0;bool sent=false;
+            Timer::Ptr timer;std::function<void(Json::Value)> emit;
+            void finish() {
+                Json::Value result;
+                std::function<void(Json::Value)> reply;
+                {std::lock_guard<std::mutex> lock(mutex);if(sent)return;sent=true;result["code"]=0;result["data"]=rows;reply=std::move(emit);}
+                timer.reset();reply(std::move(result));
+            }
+            void complete(size_t i,Json::Value row) {
+                bool done=false;
+                {std::lock_guard<std::mutex> lock(mutex);if(sent)return;rows[Json::ArrayIndex(i)]=std::move(row);done=--remaining==0;}
+                if(done)finish();
+            }
+        };
+        static std::atomic<unsigned> pending{0};
+        auto batch=std::make_shared<Batch>();batch->remaining=streams.size();batch->rows=Json::Value(Json::arrayValue);
+        batch->emit=[invoker,headerOut](Json::Value result){invoker(200,headerOut,result.toStyledString());};
+        for(const auto &s:streams){auto row=liveStreamHealthSample(nullptr,getCurrentMillisecond());row["channelUid"]=s["channelUid"];row["stream"]=s["stream"];row["observation"]="unavailable";batch->rows.append(row);}
+        auto poller=EventPoller::getCurrentPoller();
+        batch->timer=std::make_shared<Timer>(0.8f,[batch]{batch->finish();return false;},poller);
+        for(Json::ArrayIndex i=0;i<streams.size();++i) {
+            const auto uid=streams[i]["channelUid"].asString(),kind=streams[i]["stream"].asString();
+            auto row=liveStreamHealthSample(nullptr,getCurrentMillisecond());row["channelUid"]=uid;row["stream"]=kind;row["observation"]="unavailable";
+            const auto tuple=MediaTuple{DEFAULT_VHOST,"live",kind+"/"+uid,""};
+            auto proxy=s_player_proxy.find(tuple.shortUrl());
+            if(!proxy){row["observation"]="not_found";batch->complete(i,std::move(row));continue;}
+            bool expected=false;
+            if(!proxy->live_health_pending.compare_exchange_strong(expected,true)){row["observation"]="busy";batch->complete(i,std::move(row));continue;}
+            if(pending.fetch_add(1)>=64){--pending;proxy->live_health_pending=false;row["observation"]="busy";batch->complete(i,std::move(row));continue;}
+            const auto queued=getCurrentMillisecond();
+            // 진단 대기열 때문에 삭제된 운영 소스의 수명을 연장하지 않는다.
+            std::weak_ptr<PlayerProxy> weak_proxy=proxy;
+            try {
+                proxy->getPoller()->async([batch,weak_proxy,i,row,queued]() mutable {
+                    auto proxy=weak_proxy.lock();
+                    if(!proxy){--pending;row["observation"]="not_found";batch->complete(i,std::move(row));return;}
+                    try {
+                        const auto now=getCurrentMillisecond();auto sample=liveStreamHealthSample(proxy,now);
+                        sample["channelUid"]=row["channelUid"];sample["stream"]=row["stream"];
+                        sample["ownerPollerDelayMs"]=Json::UInt64(RtspInputProgress::age(now,queued));
+                        batch->complete(i,std::move(sample));
+                    }catch(const std::exception &){batch->complete(i,std::move(row));}
+                    proxy->live_health_pending=false;--pending;
+                },false);
+            }catch(const std::exception &){proxy->live_health_pending=false;--pending;batch->complete(i,std::move(row));}
+        }
     });
 
     // 删除录像文件夹  [AUTO-TRANSLATED:821aed07]

@@ -12,12 +12,14 @@ struct LiveFmp4Snapshot {
     uint64_t stamp_rejected=0,writer_failed=0,empty_output=0,fragments=0,ring_batches=0,ring_generation=0;
     uint64_t input_at=0,enabled_at=0,fragment_at=0,ring_at=0;
     uint64_t before_mux=0,before_mux_at=0,pipeline_input=0,pipeline_at=0,stage=0,stage_at=0,paced=0;
+    uint64_t video_frames=0,video_at=0;
 };
 struct LiveFmp4Diagnostic {
     std::atomic<uint64_t> input{0},enabled{0},no_init{0},missing_track{0},waiting_key{0},merged{0};
     std::atomic<uint64_t> stamp_rejected{0},writer_failed{0},empty_output{0},fragments{0},ring_batches{0},ring_generation{0};
     std::atomic<uint64_t> input_at{0},enabled_at{0},fragment_at{0},ring_at{0};
     std::atomic<uint64_t> before_mux{0},before_mux_at{0},pipeline_input{0},pipeline_at{0},stage{0},stage_at{0},paced{0};
+    std::atomic<uint64_t> video_frames{0},video_at{0};
     LiveFmp4Snapshot snapshot() const {
         LiveFmp4Snapshot s;
 #define EF_FMP4_LOAD(field) s.field=field.load(std::memory_order_relaxed)
@@ -27,6 +29,7 @@ struct LiveFmp4Diagnostic {
         EF_FMP4_LOAD(input_at);EF_FMP4_LOAD(enabled_at);EF_FMP4_LOAD(fragment_at);EF_FMP4_LOAD(ring_at);
         EF_FMP4_LOAD(before_mux);EF_FMP4_LOAD(before_mux_at);EF_FMP4_LOAD(pipeline_input);EF_FMP4_LOAD(pipeline_at);
         EF_FMP4_LOAD(stage);EF_FMP4_LOAD(stage_at);EF_FMP4_LOAD(paced);
+        EF_FMP4_LOAD(video_frames);EF_FMP4_LOAD(video_at);
 #undef EF_FMP4_LOAD
         return s;
     }

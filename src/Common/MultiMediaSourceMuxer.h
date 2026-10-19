@@ -205,6 +205,8 @@ public:
     const ProtocolOption &getOption() const;
     const MediaTuple &getMediaTuple() const;
     std::string shortUrl() const;
+    std::shared_ptr<LiveFmp4Diagnostic> liveFmp4Progress() const { return _fmp4?_fmp4->getLiveDiagnostic():nullptr; }
+    MediaSource::Ptr liveFmp4Source() const { return _fmp4?_fmp4->getMediaSource():nullptr; }
 #if defined(ENABLE_RTPPROXY)
     void forEachRtpSender(const std::function<void(const std::string &ssrc, const RtpSender &sender)> &cb) const;
 #endif // ENABLE_RTPPROXY

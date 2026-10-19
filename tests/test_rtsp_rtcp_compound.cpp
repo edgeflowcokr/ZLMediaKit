@@ -30,9 +30,15 @@ int main() {
     expect(progress.accepted_rtp==1&&progress.sorted_rtp==0&&progress.rtp_at==1300,"input_boundary_distinguishes_accepted_from_sorted");
     progress.onSortedRtp(1400);
     expect(progress.sorted_rtp==1&&progress.sorted_at==1400,"input_boundary_records_sorted_progress");
+    expect(progress.video_rtp==0&&progress.control_ok==0,"audio_or_aggregate_tcp_does_not_prove_video_or_control");
+    progress.onVideoRtp(1410);
+    expect(progress.video_rtp==1&&progress.video_at==1410,"video_progress_is_an_independent_counter");
+    expect(!progress.onControlResponse("7","8","200",1420)&&!progress.onControlResponse("7","7","401",1420)&&progress.control_ok==0,"control_rejects_wrong_cseq_and_failed_response");
+    expect(progress.onControlResponse("7","7","200",1430)&&progress.control_ok==1&&progress.control_at==1430,"control_success_requires_matching_request");
     expect(RtspInputProgress::age(1500,progress.tcp_at)==300&&RtspInputProgress::age(1500,progress.sorted_at)==100,"input_boundary_ages_use_same_monotonic_clock");
     expect(RtspInputProgress::age(10,20)==0,"input_boundary_age_never_wraps");
     progress.reset(2000);
+    expect(progress.video_rtp==0&&progress.video_at==0&&progress.control_ok==0&&progress.control_at==0,"reconnect_discards_old_video_and_control_observations");
     expect(progress.tcp_reads==0&&progress.tcp_bytes==0&&progress.framed_rtp==0&&progress.accepted_rtp==0&&progress.sorted_rtp==0&&progress.tcp_at==2000&&progress.framed_at==2000&&progress.rtp_at==2000&&progress.sorted_at==2000,"input_boundary_reconnect_resets_all_counts_and_ages");
     expect(safeRtspDiagnosticStream("main/ch-test_1")=="main/ch-test_1","input_boundary_allows_only_safe_stream_identity");
     expect(safeRtspDiagnosticStream("rtsp://user:secret@host/live")=="unclassified"&&safeRtspDiagnosticStream("main/ch-test\nsecret")=="unclassified","input_boundary_rejects_urls_and_log_injection");

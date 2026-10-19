@@ -8,6 +8,8 @@
 #include "Util/base64.h"
 #include "FMP4/FMP4MediaSource.h"
 #include "FMP4/HttpFmp4Timeline.h"
+#include "Common/LiveStreamHealth.h"
+#include "Rtsp/RtspPlayerImp.h"
 
 using namespace mediakit;
 using namespace toolkit;
@@ -35,6 +37,7 @@ struct FixtureInput : PlayerImp<PlayerBase, PlayerBase> {
 struct FixtureProxy : PlayerProxy {
     using PlayerProxy::PlayerProxy;
     void inject(const std::shared_ptr<FixtureInput>& p) { _delegate=p; }
+    void injectPlayer(const PlayerBase::Ptr &p) { _delegate=p; }
     void disconnect() { if (_on_shutdown) _on_shutdown(SockException(Err_timeout,"fixture interruption")); }
 };
 static int failures=0;
@@ -86,6 +89,7 @@ static void liveFmp4Reconnect(const ProtocolOption &base) {
         if(!source)return;
         expect(delivered>before&&translated_ok,"compatible_reconnect_keeps_existing_http_timeline_decodable");
         const auto active=source->getLiveDiagnostic()->snapshot();reader.reset();feed(100000);
+        expect(active.video_frames>0&&active.video_frames<active.input,"health_video_progress_excludes_configuration_nals");
         const auto idle=source->getLiveDiagnostic()->snapshot();
         expect(idle.input>active.input&&idle.enabled==active.enabled,"fmp4_proxy_idle_input_is_not_active_mux_input");
         before=delivered;attach();feed(200000);
@@ -102,6 +106,8 @@ static void liveFmp4Reconnect(const ProtocolOption &base) {
 }
 int main() {
     EventPollerPool::setPoolSize(1);
+    const auto absent=liveStreamHealthSample(nullptr,1000);
+    expect(absent["source"]["videoRtpAgeMs"].isNull()&&absent["source"]["expected"].isNull()&&absent["relay"]["fragmentAgeMs"].isNull(),"missing_health_is_unknown_not_zero_age");
     const auto cap=playerProxyContinuityCapability();
     expect(cap.revision==1 && cap.preserve_media_on_retry==1 && cap.compatible_tracks==1
         && cap.requires_reset_when_replay_zero==1,"capability_requires_explicit_runtime_policy");
@@ -111,6 +117,12 @@ int main() {
     option.enable_audio=true; option.add_mute_audio=false;
     option.enable_rtsp=true; option.rtsp_demand=false;
     auto p=std::make_shared<FixtureProxy>(MediaTuple{DEFAULT_VHOST,"test","continuity",""},option,-1,nullptr,60,60,60);
+    p->getPoller()->sync([&] {
+        auto rtsp=std::make_shared<RtspPlayerImp>(p->getPoller());p->injectPlayer(rtsp);
+        const auto idle=liveStreamHealthSample(p,getCurrentMillisecond());
+        expect(idle["observation"]=="observed"&&idle["generation"].isNull()&&!idle["source"]["expected"].asBool()&&idle["source"]["videoRtpPackets"].isNull(),"unstarted_rtsp_does_not_report_a_live_video_source");
+        expect(!idle.isMember("url")&&!idle.isMember("status_str"),"health_never_returns_raw_source_or_status");
+    });
     auto audio=std::make_shared<AACTrack>(std::string("\x12\x10",2)); audio->setIndex(1);
     auto disabled_option=option;disabled_option.enable_audio=false;
     auto disabled=std::make_shared<FixtureProxy>(MediaTuple{DEFAULT_VHOST,"test","audio-disabled",""},disabled_option,0);

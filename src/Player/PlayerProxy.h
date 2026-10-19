@@ -142,6 +142,11 @@ public:
     const std::string& getTransportUrl() const { return _transport_url; }
     const MediaTuple& getMediaTuple() const { return _tuple; }
     const ProtocolOption& getOption() const { return _option; }
+    MultiMediaSourceMuxer::Ptr liveHealthMuxer() const { return _muxer; }
+    PlayerBase::Ptr liveHealthPlayer() const { return _delegate; }
+    bool liveHealthRetryPending() const { return bool(_timer); }
+    // 늦은 조회가 owner queue에 무한 누적되지 않도록 조회당 하나만 허용한다.
+    std::atomic<bool> live_health_pending{false};
 
     void update(const std::string &url, const toolkit::mINI &args);
 

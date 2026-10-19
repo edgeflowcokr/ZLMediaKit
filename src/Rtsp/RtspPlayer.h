@@ -43,6 +43,11 @@ public:
 
     size_t getRecvSpeed() override;
     size_t getRecvTotalBytes() override;
+    // 반드시 이 player의 owner poller에서만 읽는다.
+    const RtspInputProgress &liveInputProgress() const { return _input_progress; }
+    const std::string &liveInputGeneration() const { return _input_generation; }
+    bool liveInputExpected() const { return _health_receiving; }
+    bool liveInputConnecting() const { return bool(_play_check_timer); }
 
 protected:
     // 派生类回调函数  [AUTO-TRANSLATED:61e20903]
@@ -203,6 +208,8 @@ private:
     // Timeout function implementation
     toolkit::Ticker _rtp_recv_ticker;
     RtspInputProgress _input_progress;
+    std::string _input_generation;
+    bool _health_receiving=false; // 진단 전용: PLAY 성공 후 PAUSE/오류/해제 전.
     std::shared_ptr<toolkit::Timer> _play_check_timer;
     std::shared_ptr<toolkit::Timer> _rtp_check_timer;
     // 服务器支持的命令  [AUTO-TRANSLATED:f7f589bf]

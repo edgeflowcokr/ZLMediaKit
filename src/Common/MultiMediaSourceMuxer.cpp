@@ -1036,6 +1036,12 @@ bool MultiMediaSourceMuxer::onTrackFrame(const Frame::Ptr &frame_in) {
         ++diagnostic->before_mux;
         diagnostic->before_mux_at.store(getCurrentMillisecond(),std::memory_order_relaxed);
         diagnostic->paced.store(bool(_paced_sender),std::memory_order_relaxed);
+        const auto required=frame_in->getCodecId()==CodecH265?3u:2u;
+        if (frame_in->getTrackType()==TrackVideo && frame_in->size()>=frame_in->prefixSize()+required
+            && frame_in->decodeAble() && !frame_in->dropAble()) {
+            ++diagnostic->video_frames;
+            diagnostic->video_at.store(getCurrentMillisecond(),std::memory_order_relaxed);
+        }
     }
     if (_on_frame) {
         _on_frame(frame_in);

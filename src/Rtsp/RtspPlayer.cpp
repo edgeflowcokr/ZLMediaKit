@@ -53,6 +53,7 @@ void RtspPlayer::sendTeardown() {
 }
 
 void RtspPlayer::teardown() {
+    _health_receiving=false;
     sendTeardown();
     _md5_nonce.clear();
     _realm.clear();
@@ -69,6 +70,7 @@ void RtspPlayer::teardown() {
     _rtp_check_timer.reset();
     _cseq_send = 1;
     _on_response = nullptr;
+    _on_keepalive_reponse = nullptr;
 }
 
 void RtspPlayer::play(const string &strUrl) {
@@ -83,6 +85,7 @@ void RtspPlayer::play(const string &strUrl) {
     teardown();
 
     _input_progress.reset(getCurrentMillisecond());
+    _input_generation = makeRandStr(20);
 
     if (url._user.size()) {
         (*this)[Client::kRtspUser] = url._user;
@@ -475,7 +478,10 @@ void RtspPlayer::sendKeepAlive() {
     {
         WarnL << "receive RTP packet before handleResPAUSE";
     }
-    _on_keepalive_reponse = [](const Parser &parser) {};
+    const auto expected_cseq=std::to_string(_cseq_send);
+    _on_keepalive_reponse = [this,expected_cseq](const Parser &parser) {
+        _input_progress.onControlResponse(expected_cseq,parser["CSeq"],parser.status(),getCurrentMillisecond());
+    };
     if (_supported_cmd.find("GET_PARAMETER") != _supported_cmd.end()) {
         // 支持GET_PARAMETER，用此命令保活  [AUTO-TRANSLATED:b45cd737]
         // Support GET_PARAMETER, use this command to keep alive
@@ -575,6 +581,7 @@ void RtspPlayer::handleResPAUSE(const Parser &parser, int type) {
     }
 
     if (type == type_pause) {
+        _health_receiving=false;
         // 暂停成功！  [AUTO-TRANSLATED:782cea77]
         // Pause successfully!
         _rtp_check_timer.reset();
@@ -670,6 +677,7 @@ void RtspPlayer::onRtcpPacket(int track_idx, SdpTrack::Ptr &track, uint8_t *data
 
 void RtspPlayer::onRtpSorted(RtpPacket::Ptr rtppt, int trackidx) {
     _input_progress.onSortedRtp(getCurrentMillisecond());
+    if (_sdp_track[trackidx]->_type==TrackVideo) _input_progress.onVideoRtp(getCurrentMillisecond());
     _stamp[trackidx] = rtppt->getStampMS();
     if (!_first_stamp[trackidx]) {
         _first_stamp[trackidx] = _stamp[trackidx];
@@ -846,6 +854,7 @@ void RtspPlayer::onBeforeRtpSorted(const RtpPacket::Ptr &rtp, int track_idx) {
 }
 
 void RtspPlayer::onPlayResult_l(const SockException &ex, bool handshake_done) {
+    _health_receiving=!ex;
     if (ex.getErrCode() == Err_shutdown) {
         // 主动shutdown的，不触发回调  [AUTO-TRANSLATED:21f9c396]
         // Active shutdown, do not trigger callback

@@ -4,15 +4,22 @@
 #include <string>
 
 namespace mediakit {
-// 연결 세대별 상수 크기 누계. 실패 때만 읽으며 별도 타이머/패킷 로그는 만들지 않는다.
+// 연결 세대별 상수 크기 누계. 실패/명시적 진단에서만 읽으며 별도 타이머/패킷 로그는 만들지 않는다.
 struct RtspInputProgress {
     uint64_t tcp_reads=0,tcp_bytes=0,framed_rtp=0,accepted_rtp=0,sorted_rtp=0;
     uint64_t tcp_at=0,framed_at=0,rtp_at=0,sorted_at=0;
+    uint64_t video_rtp=0,video_at=0,control_ok=0,control_at=0;
     void reset(uint64_t now) { *this={};tcp_at=framed_at=rtp_at=sorted_at=now; }
     void onTcp(size_t bytes,uint64_t now) { ++tcp_reads;tcp_bytes+=bytes;tcp_at=now; }
     void onFramedRtp(uint64_t now) { ++framed_rtp;framed_at=now; }
     void onAcceptedRtp(uint64_t now) { ++accepted_rtp;rtp_at=now; }
     void onSortedRtp(uint64_t now) { ++sorted_rtp;sorted_at=now; }
+    void onVideoRtp(uint64_t now) { ++video_rtp;video_at=now; }
+    void onControlOK(uint64_t now) { ++control_ok;control_at=now; }
+    bool onControlResponse(const std::string &expected,const std::string &actual,const std::string &status,uint64_t now) {
+        if(expected.empty()||expected!=actual||status!="200")return false;
+        onControlOK(now);return true;
+    }
     static uint64_t age(uint64_t now,uint64_t then) {return now>=then?now-then:0;}
 };
 static constexpr const char *kRtspDiagnosticStream="edgeflow.input_stream";
