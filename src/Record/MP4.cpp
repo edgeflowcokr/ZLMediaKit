@@ -84,7 +84,13 @@ MP4FileIO::Reader MP4FileIO::createReader(){
 void MP4FileDisk::openFile(const char *file, const char *mode) {
     // 创建文件  [AUTO-TRANSLATED:bd145ed5]
     // Create a file
-    auto fp = File::create_file(file, mode);
+    _io_trace = std::make_shared<RecordIoTrace>(RecordIoTrace::volume(file), [](const RecordIoSample &s) {
+        WarnL << "[recording-io] op=" << recordIoName(s.op) << " file_id=" << s.file_id << " volume=" << s.volume
+              << " elapsed_ms=" << s.elapsed_ms << " bytes=" << s.bytes << " failed=" << s.failed
+              << " errno=" << s.error << " suppressed=" << s.suppressed;
+    });
+    auto trace = _io_trace;
+    auto fp = trace->measure(RecordIoOp::Create, 0, [&]() { return File::create_file(file, mode); }, [](FILE *p) { return !p; });
     if(!fp){
         throw std::runtime_error(string("打开文件失败:") + file);
     }
@@ -107,9 +113,9 @@ void MP4FileDisk::openFile(const char *file, const char *mode) {
 
     // 创建智能指针  [AUTO-TRANSLATED:e7920ab2]
     // Create a smart pointer
-    _file.reset(fp,[file_buf](FILE *fp) {
-        fflush(fp);
-        fclose(fp);
+    _file.reset(fp,[file_buf, trace](FILE *fp) {
+        trace->measure(RecordIoOp::Flush, 0, [&]() { return fflush(fp); }, [](int r) { return r != 0; });
+        trace->measure(RecordIoOp::Close, 0, [&]() { return fclose(fp); }, [](int r) { return r != 0; });
     });
 }
 
@@ -118,22 +124,24 @@ void MP4FileDisk::closeFile() {
 }
 
 int MP4FileDisk::onRead(void *data, size_t bytes) {
-    if (bytes == fread(data, 1, bytes, _file.get())){
+    const auto count = _io_trace->measure(RecordIoOp::Read, bytes, [&]() { return fread(data, 1, bytes, _file.get()); }, [&](size_t) { return ferror(_file.get()) != 0; });
+    if (bytes == count){
         return 0;
     }
     return 0 != ferror(_file.get()) ? ferror(_file.get()) : -1 /*EOF*/;
 }
 
 int MP4FileDisk::onWrite(const void *data, size_t bytes) {
-    return bytes == fwrite(data, 1, bytes, _file.get()) ? 0 : ferror(_file.get());
+    const auto count = _io_trace->measure(RecordIoOp::Write, bytes, [&]() { return fwrite(data, 1, bytes, _file.get()); }, [&](size_t n) { return n != bytes; });
+    return bytes == count ? 0 : ferror(_file.get());
 }
 
 int MP4FileDisk::onSeek(int64_t offset) {
-    return fseek64(_file.get(), offset, offset >= 0 ? SEEK_SET : SEEK_END);
+    return _io_trace->measure(RecordIoOp::Seek, 0, [&]() { return fseek64(_file.get(), offset, offset >= 0 ? SEEK_SET : SEEK_END); }, [](int r) { return r != 0; });
 }
 
 int64_t MP4FileDisk::onTell() {
-    return ftell64(_file.get());
+    return _io_trace->measure(RecordIoOp::Tell, 0, [&]() { return ftell64(_file.get()); }, [](int64_t r) { return r < 0; });
 }
 
 /////////////////////////////////////////////////////MP4FileMemory/////////////////////////////////////////////////////////

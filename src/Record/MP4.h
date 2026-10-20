@@ -23,6 +23,7 @@
 #include "mpeg4-aac.h"
 #include "mov-buffer.h"
 #include "mov-format.h"
+#include "RecordIoTrace.h"
 
 namespace mediakit {
 
@@ -135,6 +136,8 @@ public:
      */
     void closeFile();
 
+    std::shared_ptr<RecordIoTrace> ioTrace() const { return _io_trace; }
+
 protected:
     int64_t onTell() override;
     int onSeek(int64_t offset) override;
@@ -143,6 +146,7 @@ protected:
 
 private:
     std::shared_ptr<FILE> _file;
+    std::shared_ptr<RecordIoTrace> _io_trace;
 };
 
 class MP4FileMemory : public MP4FileIO{

@@ -28,7 +28,7 @@ using namespace toolkit;
 
 namespace mediakit {
 
-void setRecordFileMtime(const std::string &path, time_t mtime) {
+int setRecordFileMtime(const std::string &path, time_t mtime) {
 #if defined(_WIN32)
     struct _utimbuf times;
     times.actime = mtime;
@@ -40,10 +40,13 @@ void setRecordFileMtime(const std::string &path, time_t mtime) {
     times.modtime = mtime;
     const int ret = utime(path.data(), &times);
 #endif
+    const int saved_errno = errno;
     if (ret != 0) {
         // 파일은 이미 정상 게시됐다. mtime 보정만 실패하면 재생 End 가 쓰기 완료 시각으로 남는다(재생은 가능).
-        WarnL << "[recording-mtime-failed] path=" << path << " mtime=" << mtime << " errno=" << errno;
+        WarnL << "[recording-mtime-failed] path=" << path << " mtime=" << mtime << " errno=" << saved_errno;
     }
+    errno = saved_errno;
+    return ret;
 }
 
 time_t recordFileEndTime(const std::string &path, time_t start, float pts_seconds, time_t last_ingest) {
@@ -119,34 +122,37 @@ void MP4Recorder::asyncClose() {
     auto muxer = std::move(_muxer);
     auto full_path_tmp = _full_path_tmp;
     auto info = _info;
+    auto io_trace = muxer->ioTrace();
     const time_t last_ingest = _last_ingest_wall;
     TraceL << "Start close tmp mp4 file: " << full_path_tmp;
-    auto finish = [muxer, full_path_tmp, info, last_ingest]() mutable {
+    auto finish = [muxer, full_path_tmp, info, last_ingest, io_trace]() mutable {
         info.time_len = muxer->getDuration() / 1000.0f;
         // 关闭mp4可能非常耗时，所以要放在后台线程执行  [AUTO-TRANSLATED:a7378a11]
         // Closing mp4 can be very time-consuming, so it should be executed in the background thread
         TraceL << "Closing tmp mp4 file: " << full_path_tmp;
-        muxer->closeMP4();
+        io_trace->measure(RecordIoOp::MuxerClose, 0, [&]() { muxer->closeMP4(); return 0; }, [](int) { return false; });
         TraceL << "Closed tmp mp4 file: " << full_path_tmp;
         if (!full_path_tmp.empty()) {
             // 获取文件大小  [AUTO-TRANSLATED:7b90eb41]
             // Get file size
-            info.file_size = File::fileSize(full_path_tmp);
+            info.file_size = io_trace->measure(RecordIoOp::FileSize, 0, [&]() { return File::fileSize(full_path_tmp); }, [](uint64_t) { return false; });
             if (info.file_size < 1024) {
                 // 录像文件太小，删除之  [AUTO-TRANSLATED:923d27c3]
                 // The recording file is too small, delete it
-                File::delete_file(full_path_tmp);
+                io_trace->measure(RecordIoOp::Remove, 0, [&]() { return File::delete_file(full_path_tmp); }, [](int r) { return r != 0; });
                 return;
             }
             // 临时文件名改成正式文件名，防止mp4未完成时被访问  [AUTO-TRANSLATED:541a6f00]
             // Change the temporary file name to the official file name to prevent access to the mp4 before it is completed
-            if (rename(full_path_tmp.data(), info.file_path.data()) != 0) {
+            if (io_trace->measure(RecordIoOp::Rename, 0, [&]() { return rename(full_path_tmp.data(), info.file_path.data()); }, [](int r) { return r != 0; }) != 0) {
                 ErrorL << "[recording-finalize-failed] source=" << full_path_tmp << " destination=" << info.file_path;
                 return; // Never announce a file that was not successfully published.
             }
             // End(mtime) = min(시작 + 길이, 마지막 수신 + 1초, 지금). 마감(쓰기 완료)이 큐 지연으로 늦어도 재생 타임라인
             // End 가 밀리지 않게, 카메라 클럭이 빨라도 다음 세그먼트 Start 를 넘거나 미래가 되지 않게.
-            setRecordFileMtime(info.file_path, recordFileEndTime(info.file_path, info.start_time, info.time_len, last_ingest));
+            io_trace->measure(RecordIoOp::Mtime, 0, [&]() {
+                return setRecordFileMtime(info.file_path, recordFileEndTime(info.file_path, info.start_time, info.time_len, last_ingest));
+            }, [](int r) { return r != 0; });
         }
         TraceL << "Emit mp4 record event: " << info.file_path;
         // 触发mp4录制切片生成事件  [AUTO-TRANSLATED:9959dcd4]

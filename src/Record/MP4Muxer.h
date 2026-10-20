@@ -162,6 +162,8 @@ public:
      */
     void closeMP4();
 
+    std::shared_ptr<RecordIoTrace> ioTrace() const { return _mp4_file ? _mp4_file->ioTrace() : nullptr; }
+
 protected:
     MP4FileIO::Writer createWriter() override;
 

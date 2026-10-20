@@ -24,7 +24,7 @@ class MP4Muxer;
 
 // 녹화 파일 mtime 을 지정 시각으로 맞춘다(실패 시 WarnL). 재생 타임라인은 mtime 을 세그먼트 End 로 쓰므로,
 // 비동기 쓰기 큐가 밀려도 End 가 쓰기 완료 시각이 아니라 "시작 + 길이"(마지막 프레임 수신 시각)가 되게 한다.
-void setRecordFileMtime(const std::string &path, time_t mtime);
+int setRecordFileMtime(const std::string &path, time_t mtime);
 // 녹화 파일 End 시각 = min(시작 + pts 길이, 마지막 프레임 수신 시각 + 1초, 현재 시각). 카메라 RTP 클럭이 실시간보다
 // 빠르면 pts 길이가 실제보다 길어 End 가 다음 세그먼트 Start 를 넘거나 미래가 되므로 수신 시각으로 제한한다.
 // last_ingest=0 이면 수신 제한 없이 현재 시각만 적용. 제한 폭이 5초 이상이면 경고 로그 1회(파일당).
