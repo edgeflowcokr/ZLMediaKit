@@ -1905,7 +1905,15 @@ void IceAgent::sendSocketData(const Buffer::Ptr& buf, const Pair::Ptr& pair, boo
     auto use_pair = pair? pair : getSelectedPair();
 
     if (use_pair == nullptr) {
-        WarnL << "pair should not be nullptr";
+        // EdgeFlow: 패킷마다 경고하던 것을 처음 한 번 + 5초마다 버린 수로 묶는다. 연결 시간 초과~해제 사이(수 초) 송출이
+        //   계속 들어와 초당 수백 줄이 쌓였다(2026-10-27 진단: 세션 9개 시간 초과 뒤 6초간 1,813줄).
+        ++_no_pair_drops;
+        auto now_ms = toolkit::getCurrentMillisecond();
+        if (_no_pair_logged_drops == 0 || now_ms - _no_pair_last_log_ms >= 5000) {
+            WarnL << "pair should not be nullptr, dropped " << (_no_pair_drops - _no_pair_logged_drops) << " packet(s) since last log, total " << _no_pair_drops;
+            _no_pair_logged_drops = _no_pair_drops;
+            _no_pair_last_log_ms = now_ms;
+        }
         return;
     }
 

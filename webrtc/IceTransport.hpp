@@ -614,6 +614,10 @@ protected:
     Pair::Ptr _nominated_pair;
     StunPacket::Ptr _nominated_response;
     std::list<std::weak_ptr<Pair> > _old_pairs;
+    // EdgeFlow: 선택된 ICE 경로 없이 보내려다 버린 패킷 수 — 경고를 패킷마다가 아니라 묶어서 남기려고 센다.
+    uint64_t _no_pair_drops = 0;
+    uint64_t _no_pair_logged_drops = 0;
+    uint64_t _no_pair_last_log_ms = 0;
 
     // 双向索引的候选地址管理结构
     struct SocketCandidateManager {
