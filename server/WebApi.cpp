@@ -2419,12 +2419,18 @@ void installWebApi() {
     api_regist(delete_webrtc_url, [](API_ARGS_MAP_ASYNC) {
         CHECK_ARGS("id", "token");
         CHECK(allArgs.parser.method() == "DELETE", "http method is not DELETE: " + allArgs.parser.method());
-        auto obj = WebRtcTransportManager::Instance().getItem(allArgs["id"]);
+        // EdgeFlow: WHEP 응답 Location 은 id·token 을 URL 인코딩해 준다(id 에 '/' 가 늘 들어간다 — 예 wKgABUZQRlE/1 → %2F).
+        //   그런데 URL 쿼리 인자는 getAllArgs 에서 디코드되지 않아, 인코딩된 그대로 세션을 찾다 404 가 났다 → 세션 종료가 한 번도
+        //   성공하지 못하고 연결 시간 초과까지 남았다(2026-10-27 .5 실측: DELETE 전부 404). 받을 때 디코드한다(인코딩 안 된 값은 그대로).
+        const std::string id = strCoding::UrlDecodeComponent(allArgs["id"]);
+        const std::string token = strCoding::UrlDecodeComponent(allArgs["token"]);
+        auto obj = WebRtcTransportManager::Instance().getItem(id);
         if (!obj) {
+            WarnL << "delete_webrtc: id not found: " << id;
             invoker(404, headerOut, "id not found");
             return;
         }
-        if (obj->deleteRandStr() != allArgs["token"]) {
+        if (obj->deleteRandStr() != token) {
             invoker(401, headerOut, "token incorrect");
             return;
         }
@@ -2443,12 +2449,15 @@ void installWebApi() {
             val["msg"] = msg;
             invoker(http_code, headerOut, val.toStyledString());
         };
-        auto obj = WebRtcTransportManager::Instance().getItem(allArgs["id"]);
+        // EdgeFlow: delete_webrtc 와 같이 인코딩된 id·token, 그리고 웹이 URLSearchParams 로 붙인 app·stream(main/ch-… → %2F)을 디코드한다.
+        const std::string id = strCoding::UrlDecodeComponent(allArgs["id"]);
+        const std::string token = strCoding::UrlDecodeComponent(allArgs["token"]);
+        auto obj = WebRtcTransportManager::Instance().getItem(id);
         if (!obj) {
             reply(404, API::NotFound, "id not found");
             return;
         }
-        if (obj->deleteRandStr() != allArgs["token"]) {
+        if (obj->deleteRandStr() != token) {
             reply(401, API::AuthFailed, "token incorrect");
             return;
         }
@@ -2459,10 +2468,10 @@ void installWebApi() {
         }
         MediaInfo info;
         info.schema = RTSP_SCHEMA;
-        std::string vhost = allArgs["vhost"];
+        std::string vhost = strCoding::UrlDecodeComponent(allArgs["vhost"]);
         info.vhost = vhost.empty() ? std::string(DEFAULT_VHOST) : vhost;
-        info.app = std::string(allArgs["app"]);
-        info.stream = std::string(allArgs["stream"]);
+        info.app = strCoding::UrlDecodeComponent(allArgs["app"]);
+        info.stream = strCoding::UrlDecodeComponent(allArgs["stream"]);
         auto session_ptr = static_pointer_cast<Session>(static_cast<Session &>(sender).shared_from_this());
         MediaSource::findAsync(info, session_ptr, [player, reply](const MediaSource::Ptr &src_in) mutable {
             auto src = dynamic_pointer_cast<RtspMediaSource>(src_in);
