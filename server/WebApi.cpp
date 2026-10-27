@@ -1087,7 +1087,20 @@ void installWebApi() {
         if (lst.size() == 1) {
             // 如果是搜索单一流，那么在它的归属线程中执行，用于获取丢包率参数
             auto front = std::move(lst.front());
-            front->getOwnerPoller()->async([=]() mutable {
+            toolkit::EventPoller::Ptr poller;
+            try {
+                poller = front->getOwnerPoller();
+            } catch (std::exception &ex) {
+                // EdgeFlow: 정리 중인 소스는 소유 스레드가 없어 예외가 나고 요청 전체가 실패했다(파일 영상 송출자 회수 실패 → 재생 실패,
+                //   2026-10-27 진단). 여러 스트림 조회와 같이 손실률 없이 이 자리에서 답한다.
+                WarnL << "getMediaList: owner poller unavailable, answering without loss rate: " << ex.what();
+            }
+            if (!poller) {
+                val["data"].append(makeMediaSourceJson(*front));
+                invoker(200, headerOut, val.toStyledString());
+                return;
+            }
+            poller->async([=]() mutable {
                 val["data"].append(makeMediaSourceJson(*front));
                 invoker(200, headerOut, val.toStyledString());
             });
