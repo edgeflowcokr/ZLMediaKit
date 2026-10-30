@@ -8,6 +8,8 @@
  * may be found in the AUTHORS file in the root of the source tree.
  */
 
+#include <cerrno>
+#include <cstring>
 #include <ctime>
 #include <iomanip> 
 #include <sys/stat.h>
@@ -63,11 +65,42 @@ void HlsMakerImp::clearCache() {
     clearCache(true, false);
 }
 
-static void clearHls(const std::list<std::string> &files) {
+// EdgeFlow: 라이브 HLS 파일 삭제 실패를 경로·errno 와 함께 남기고 5·30·120초 뒤 최대 3회 다시 지운다. 예전엔 실패하면 재시도 없이
+//   경로를 잊어 고아 조각이 라이브 캐시(www/live)에 쌓였고 C: 가 가득 찼다(노션 [저장소] 1번). 재시도까지 실패한 것은 백엔드 정리기의
+//   라이브 캐시 고아 스윕(나이 기준)이 지운다. 없는 파일(ENOENT — 예: 지연 재생목록을 만들지 않은 스트림)은 실패가 아니다.
+static const int kHlsDeleteRetrySec[] = {5, 30, 120};
+
+static void clearHls(const std::list<std::string> &files, const EventPoller::Ptr &poller, size_t attempt = 0) {
+    if (files.empty()) {
+        return;
+    }
+    std::list<std::string> failed;
     for (auto &file : files) {
-        File::delete_file(file);
+        errno = 0;
+        if (File::delete_file(file) != 0) {
+            const int err = errno;
+            if (err == ENOENT) {
+                continue;
+            }
+            failed.emplace_back(file);
+            WarnL << "[hls-delete-failed] path=" << file << " errno=" << err << " (" << strerror(err) << ") attempt=" << (attempt + 1);
+        }
     }
     File::deleteEmptyDir(File::parentDir(files.back()));
+    if (failed.empty()) {
+        return;
+    }
+    constexpr size_t retries = sizeof(kHlsDeleteRetrySec) / sizeof(kHlsDeleteRetrySec[0]);
+    if (attempt >= retries || !poller) {
+        WarnL << "[hls-delete-gave-up] files=" << failed.size() << " first=" << failed.front() << " (left to the backend live-cache orphan sweep)";
+        return;
+    }
+    const int delay_sec = kHlsDeleteRetrySec[attempt];
+    WarnL << "[hls-delete-retry] files=" << failed.size() << " in " << delay_sec << "s";
+    poller->doDelayTask(delay_sec * 1000, [failed, poller, attempt]() {
+        clearHls(failed, poller, attempt + 1);
+        return 0;
+    });
 }
 
 void HlsMakerImp::clearCache(bool immediately, bool eof) {
@@ -93,10 +126,11 @@ void HlsMakerImp::clearCache(bool immediately, bool eof) {
         // Delete file only after hls live streaming
         GET_CONFIG(uint32_t, delay, Hls::kDeleteDelaySec);
         if (!delay || immediately) {
-            clearHls(lst);
+            clearHls(lst, _poller);
         } else {
-            _poller->doDelayTask(delay * 1000, [lst]() {
-                clearHls(lst);
+            auto poller = _poller;
+            _poller->doDelayTask(delay * 1000, [lst, poller]() {
+                clearHls(lst, poller);
                 return 0;
             });
         }
