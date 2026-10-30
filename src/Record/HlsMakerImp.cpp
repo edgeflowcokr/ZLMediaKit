@@ -68,9 +68,20 @@ void HlsMakerImp::clearCache() {
 // EdgeFlow: 라이브 HLS 파일 삭제 실패를 경로·errno 와 함께 남기고 5·30·120초 뒤 최대 3회 다시 지운다. 예전엔 실패하면 재시도 없이
 //   경로를 잊어 고아 조각이 라이브 캐시(www/live)에 쌓였고 C: 가 가득 찼다(노션 [저장소] 1번). 재시도까지 실패한 것은 백엔드 정리기의
 //   라이브 캐시 고아 스윕(나이 기준)이 지운다. 없는 파일(ENOENT — 예: 지연 재생목록을 만들지 않은 스트림)은 실패가 아니다.
+//   이름이 고정된 파일(*.m3u8·init.mp4)은 재시도하지 않는다 — 그 사이 같은 스트림을 다시 시청하면 같은 경로에 새 세션의 살아 있는
+//   재생목록이 생겨 재시도가 그것을 지운다(조각은 날짜/시/분-초_번호 이름이라 다시 생기지 않는다). 고정 이름 파일은 백엔드 스윕이
+//   수정 시각 기준으로 지운다(살아 있는 재생목록은 계속 갱신돼 대상이 아니다).
+//   지연 작업은 poller 를 weak_ptr 로만 쥔다 — 작업이 poller 자신의 지연 작업 목록에 있으므로 강한 참조는 순환이 돼 종료 때
+//   poller 가 해제(스레드 join)되지 않는다.
 static const int kHlsDeleteRetrySec[] = {5, 30, 120};
 
-static void clearHls(const std::list<std::string> &files, const EventPoller::Ptr &poller, size_t attempt = 0) {
+static bool isFixedNameHlsFile(const std::string &file) {
+    const auto slash = file.find_last_of("/\\");
+    const std::string name = slash == std::string::npos ? file : file.substr(slash + 1);
+    return name == "init.mp4" || (name.size() >= 5 && name.compare(name.size() - 5, 5, ".m3u8") == 0);
+}
+
+static void clearHls(const std::list<std::string> &files, const std::weak_ptr<EventPoller> &weak_poller, size_t attempt = 0) {
     if (files.empty()) {
         return;
     }
@@ -82,8 +93,12 @@ static void clearHls(const std::list<std::string> &files, const EventPoller::Ptr
             if (err == ENOENT) {
                 continue;
             }
-            failed.emplace_back(file);
-            WarnL << "[hls-delete-failed] path=" << file << " errno=" << err << " (" << strerror(err) << ") attempt=" << (attempt + 1);
+            const bool fixed = isFixedNameHlsFile(file);
+            WarnL << "[hls-delete-failed] path=" << file << " errno=" << err << " (" << strerror(err) << ") attempt=" << (attempt + 1)
+                  << (fixed ? " (fixed-name file: no retry, left to the backend live-cache orphan sweep)" : "");
+            if (!fixed) {
+                failed.emplace_back(file);
+            }
         }
     }
     File::deleteEmptyDir(File::parentDir(files.back()));
@@ -91,14 +106,15 @@ static void clearHls(const std::list<std::string> &files, const EventPoller::Ptr
         return;
     }
     constexpr size_t retries = sizeof(kHlsDeleteRetrySec) / sizeof(kHlsDeleteRetrySec[0]);
+    auto poller = weak_poller.lock();
     if (attempt >= retries || !poller) {
         WarnL << "[hls-delete-gave-up] files=" << failed.size() << " first=" << failed.front() << " (left to the backend live-cache orphan sweep)";
         return;
     }
     const int delay_sec = kHlsDeleteRetrySec[attempt];
     WarnL << "[hls-delete-retry] files=" << failed.size() << " in " << delay_sec << "s";
-    poller->doDelayTask(delay_sec * 1000, [failed, poller, attempt]() {
-        clearHls(failed, poller, attempt + 1);
+    poller->doDelayTask(delay_sec * 1000, [failed, weak_poller, attempt]() {
+        clearHls(failed, weak_poller, attempt + 1);
         return 0;
     });
 }
@@ -128,9 +144,9 @@ void HlsMakerImp::clearCache(bool immediately, bool eof) {
         if (!delay || immediately) {
             clearHls(lst, _poller);
         } else {
-            auto poller = _poller;
-            _poller->doDelayTask(delay * 1000, [lst, poller]() {
-                clearHls(lst, poller);
+            std::weak_ptr<EventPoller> weak_poller = _poller;
+            _poller->doDelayTask(delay * 1000, [lst, weak_poller]() {
+                clearHls(lst, weak_poller);
                 return 0;
             });
         }
