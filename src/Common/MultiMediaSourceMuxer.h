@@ -133,7 +133,9 @@ public:
      * @param forward_time_ms 后续录制时长
      * @return 录制文件绝对路径
      */
-    std::string startRecord(const std::string &file_path, int back_time_ms, int forward_time_ms);
+    // history_ms(선택): 클립에 실제로 넣은 이력 길이(유지 첫 프레임 ~ 최신 프레임 dts, ms). 이력이 없으면 0.
+    //   노드가 「지시 시각 − history_ms」로 클립 실제 시작을 잰다(계산값 BEGIN − back_ms 는 키프레임 정렬·판정 지연만큼 어긋남).
+    std::string startRecord(const std::string &file_path, int back_time_ms, int forward_time_ms, uint64_t *history_ms = nullptr);
 
     /**
      * 진행 중인 이벤트 클립(startRecord back/forward) 녹화를 조기 종료한다(결함234 정밀 트림).

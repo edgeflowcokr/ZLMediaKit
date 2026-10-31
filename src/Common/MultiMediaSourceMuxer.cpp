@@ -487,7 +487,7 @@ bool MultiMediaSourceMuxer::setupRecord(MediaSource &sender, Recorder::type type
     }
 }
 
-std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int back_time_ms, int forward_time_ms) {
+std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int back_time_ms, int forward_time_ms, uint64_t *history_ms) {
 #if !defined(ENABLE_MP4)
     throw std::invalid_argument("mp4相关功能未打开，请开启ENABLE_MP4宏后编译再测试");
 #else
@@ -578,6 +578,9 @@ std::string MultiMediaSourceMuxer::startRecord(const std::string &file_path, int
         muxer->addTrack(track);
     }
     muxer->addTrackCompleted();
+    if (history_ms) {
+        *history_ms = have_history ? history_plan.span_ms : 0;
+    }
     if (have_history) {
         muxer->inputHistory(std::move(history_plan));
     }

@@ -1917,13 +1917,15 @@ void installWebApi() {
         src->getOwnerPoller()->async([=]() mutable {
             std::string err;
             std::string path;
+            uint64_t history_ms = 0;
             try {
-                path = src->getMuxer()->startRecord(allArgs["path"], allArgs["back_ms"], allArgs["forward_ms"]);
+                path = src->getMuxer()->startRecord(allArgs["path"], allArgs["back_ms"], allArgs["forward_ms"], &history_ms);
             } catch (std::exception &ex) {
                 err = ex.what();
             }
             val["code"] = err.empty() ? API::Success : API::OtherFailed;
             val["data"]["path"] = path;
+            val["data"]["history_ms"] = (Json::UInt64)history_ms; // 클립에 실제로 넣은 이력 길이(노드 클립 시작 보정)
             val["msg"] = err;
             invoker(200, headerOut, val.toStyledString());
         });

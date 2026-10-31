@@ -27,7 +27,7 @@ public:
     struct Result { float seconds = 0; uint64_t file_size = 0; time_t start_time = 0; bool degraded = false; };
     using Completed = std::function<void(const Result&)>;
     // 이력 적재 계획. planHistory 가 openMP4 제출 전에 검증·자르기를 끝낸다(표현 불가면 빈 mp4 를 만들지 않는다).
-    struct HistoryPlan { std::list<Frame::Ptr> frames; size_t bytes = 0; time_t start_time = 0; };
+    struct HistoryPlan { std::list<Frame::Ptr> frames; size_t bytes = 0; time_t start_time = 0; uint64_t span_ms = 0; };
 
 private:
     struct State {
@@ -174,6 +174,7 @@ public:
         // 시작 시각 = 지금(가장 최근 이력 ≈ 방금 수신) - (최신 dts - 유지 첫 프레임 dts).
         const auto span_ms = frames.back()->dts() > frames[trim.start]->dts() ? frames.back()->dts() - frames[trim.start]->dts() : 0;
         plan.start_time = ::time(NULL) - static_cast<time_t>(span_ms / 1000);
+        plan.span_ms = span_ms;
         return plan;
     }
     void inputHistory(HistoryPlan plan) {
