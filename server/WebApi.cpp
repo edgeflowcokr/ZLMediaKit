@@ -1905,6 +1905,38 @@ void installWebApi() {
         });
     });
 
+    // 가변 프레임 녹화(EdgeFlowAI): 연속 녹화를 정지 구간 키프레임만(mode=keyframe) 또는 모든 프레임(mode=full)으로.
+    //   노드가 채널 움직임으로 상태가 바뀔 때·60초마다 부른다. 스트림이 다시 만들어지면 full 로 돌아간다(docs/VARIABLE_FRAME_RECORDING.md).
+    api_regist("/index/api/setRecordFrameMode",[](API_ARGS_MAP_ASYNC){
+        CHECK_SECRET();
+        CHECK_ARGS("vhost", "app", "stream", "mode");
+        const std::string mode = allArgs["mode"];
+        if (mode != "keyframe" && mode != "full") {
+            throw ApiRetException("mode must be keyframe or full", API::InvalidArgs);
+        }
+        auto src = MediaSource::find(allArgs["vhost"], allArgs["app"], allArgs["stream"]);
+        if (!src) {
+            throw ApiRetException("can not find the stream", API::NotFound);
+        }
+        src->getOwnerPoller()->async([=]() mutable {
+            auto muxer = src->getMuxer();
+            if (!muxer) {
+                val["code"] = API::OtherFailed;
+                val["msg"] = "stream has no muxer";
+                invoker(200, headerOut, val.toStyledString());
+                return;
+            }
+            const bool on = mode == "keyframe";
+            if (muxer->recordKeyframeOnly() != on) {
+                InfoL << "[record-thin] stream=" << src->getUrl() << " mode=" << mode;
+            }
+            muxer->setRecordKeyframeOnly(on);
+            val["code"] = API::Success;
+            val["data"]["mode"] = mode;
+            invoker(200, headerOut, val.toStyledString());
+        });
+    });
+
     api_regist("/index/api/startRecordTask",[](API_ARGS_MAP_ASYNC){
         CHECK_SECRET();
         CHECK_ARGS("vhost", "app", "stream", "path", "back_ms", "forward_ms");

@@ -16,6 +16,7 @@
 #include "Common/MediaSink.h"
 #include "Record/Recorder.h"
 #include "Record/BoundedRecordWorker.h"
+#include "Record/RecordThinner.h"
 #include "Rtp/RtpSender.h"
 #include "Record/HlsRecorder.h"
 #include "Record/HlsMediaSource.h"
@@ -145,6 +146,11 @@ public:
      */
     bool stopRecord(const std::string &file_path);
 
+    // 가변 프레임 녹화(EdgeFlowAI): true 면 연속 녹화에 키프레임만 넘긴다(정지 구간). owner poller 에서 부른다.
+    //   docs/VARIABLE_FRAME_RECORDING.md(00.NK_Edge). 이벤트 클립(startRecord)은 영향 없음.
+    void setRecordKeyframeOnly(bool on) { _mp4_thin.setKeyframeOnly(on); }
+    bool recordKeyframeOnly() const { return _mp4_thin.keyframeOnly(); }
+
     /**
      * 获取录制状态
      * @param type 录制类型
@@ -273,6 +279,7 @@ private:
     RtspMediaSourceMuxer::Ptr _rtsp;
     TSMediaSourceMuxer::Ptr _ts;
     MediaSinkInterface::Ptr _mp4;
+    RecordThinner _mp4_thin; // 연속 녹화(_mp4) 앞단 프레임 선별(가변 프레임 녹화)
     HlsRecorder::Ptr _hls;
     HlsFMP4Recorder::Ptr _hls_fmp4;
     toolkit::EventPoller::Ptr _poller;

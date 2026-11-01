@@ -1087,7 +1087,10 @@ bool MultiMediaSourceMuxer::onTrackFrame_l(const Frame::Ptr &frame_in) {
 
     if (_mp4) {
         diagnostic.stage(6,getCurrentMillisecond());
-        ret = _mp4->inputFrame(frame) ? true : ret;
+        // 가변 프레임 녹화: 정지 구간이면 키프레임만 넘긴다(RecordThinner, docs/VARIABLE_FRAME_RECORDING.md).
+        const auto &stream = _tuple.shortUrl();
+        _mp4_thin.feed(frame, stream, [&](const Frame::Ptr &f) { ret = _mp4->inputFrame(f) ? true : ret; });
+        _mp4_thin.logIfDue(stream);
     }
     if (_fmp4) {
         diagnostic.stage(7,getCurrentMillisecond());
