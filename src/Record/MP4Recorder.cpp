@@ -188,7 +188,11 @@ bool MP4Recorder::inputFrame(const Frame::Ptr &frame, time_t ingest_wall) {
 
 bool MP4Recorder::inputFrame(const Frame::Ptr &frame) {
     auto stamp_inc = _delta_stamp[frame->getTrackType()].relativeStamp(frame->pts(), false);
-    if (!_muxer || (stamp_inc > int64_t(_max_second) * 1000 && (!_have_video || frame->keyFrame()))) {
+    // 파일을 연 뒤 수신 벽시계로 슬라이스 길이가 지났는지도 본다. DeltaStamp 는 300ms 넘는 간격을 직전 간격으로
+    // 눌러서, 키프레임만 기록(RecordThinner, 1~2초 간격) 중엔 상대 시각이 거의 늘지 않아 파일이 끝없이 커졌다(결함 805).
+    const time_t wall_now = _ingest_wall ? _ingest_wall : ::time(NULL);
+    const bool wall_due = _muxer && wall_now - _info.start_time >= (time_t)_max_second;
+    if (!_muxer || ((stamp_inc > int64_t(_max_second) * 1000 || wall_due) && (!_have_video || frame->keyFrame()))) {
         // 成立条件  [AUTO-TRANSLATED:8c9c6083]
         // Conditions for establishment
         // 1、_muxer为空  [AUTO-TRANSLATED:fa236097]
