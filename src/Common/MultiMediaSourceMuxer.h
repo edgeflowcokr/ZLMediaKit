@@ -150,6 +150,7 @@ public:
     //   docs/VARIABLE_FRAME_RECORDING.md(00.NK_Edge). 이벤트 클립(startRecord)은 영향 없음.
     void setRecordKeyframeOnly(bool on) { _mp4_thin.setKeyframeOnly(on); }
     bool recordKeyframeOnly() const { return _mp4_thin.keyframeOnly(); }
+    uint64_t recordWrittenBytes() const { return _mp4_thin.writtenBytes(); }
 
     /**
      * 获取录制状态

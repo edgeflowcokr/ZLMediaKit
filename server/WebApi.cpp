@@ -489,6 +489,11 @@ Value makeMediaSourceJson(MediaSource &media) {
     item["originUrl"] = media.getOriginUrl();
     item["isRecordingMP4"] = media.isRecording(Recorder::type_mp4);
     item["isRecordingHLS"] = media.isRecording(Recorder::type_hls);
+    if (auto muxer = media.getMuxer()) {
+        // 가변 프레임 녹화: 키프레임만 기록 중인지·녹화기에 넘긴 누적 바이트(백엔드 녹화 쓰기 예산이 실제 쓰기량으로 쓴다).
+        item["recordKeyframeOnly"] = muxer->recordKeyframeOnly();
+        item["recordWrittenBytes"] = (Json::UInt64) muxer->recordWrittenBytes();
+    }
     auto originSock = media.getOriginSock();
     if (originSock) {
         fillSockInfo(item["originSock"], originSock.get());

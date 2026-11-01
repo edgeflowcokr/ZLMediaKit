@@ -27,10 +27,17 @@ public:
 
     void setKeyframeOnly(bool on) { _want_keyframe_only.store(on); }
     bool keyframeOnly() const { return _want_keyframe_only.load(); }
+    // 녹화기에 넘긴 누적 바이트(비디오·오디오, 모드 무관). 백엔드 녹화 쓰기 예산이 키프레임만 기록하는 채널의 실제 쓰기량을
+    //   이 증가분으로 잰다(입력 비트레이트로 세면 절감이 예산에 안 잡힌다). getMediaList 의 recordWrittenBytes.
+    uint64_t writtenBytes() const { return _written_bytes.load(std::memory_order_relaxed); }
 
     // feed 는 녹화기에 넘길 프레임을 write 로 넘긴다(0개 이상).
     template <typename Write>
-    void feed(const Frame::Ptr &frame, const std::string &stream, Write &&write) {
+    void feed(const Frame::Ptr &frame, const std::string &stream, Write &&write_out) {
+        auto write = [&](const Frame::Ptr &f) {
+            _written_bytes.fetch_add(f->size(), std::memory_order_relaxed);
+            write_out(f);
+        };
         if (frame->getTrackType() != TrackVideo) {
             write(frame);
             return;
@@ -112,6 +119,7 @@ private:
     }
 
     std::atomic<bool> _want_keyframe_only { false };
+    std::atomic<uint64_t> _written_bytes { 0 };
     bool _active = false;
     bool _wait_key = false;
     std::vector<Frame::Ptr> _gop;
