@@ -53,6 +53,29 @@ target_compile_definitions(MediaServer
 target_compile_options(MediaServer
   PRIVATE ${COMPILE_OPTIONS_DEFAULT})
 
+# EdgeFlowAI: 윈도는 C++ new/delete 를 정적 mimalloc 으로(ef_mimalloc.cpp) — 기본 프로세스 힙 잠금 경합으로 이벤트 스레드가 몇 초씩
+#   멈췄다(EdgeFlowAI docs/MEDIA_THREAD_LOAD.md §5). 자동업데이트는 exe 만 바꾸므로 DLL 이 아니라 같은 vcpkg 의 x64-windows-static-md
+#   트리플릿 정적 라이브러리를 쓴다(설치: vcpkg install mimalloc:x64-windows-static-md). 없으면 멈춘다 — 조용히 기본 힙으로 돌아가지 않게.
+if(MSVC AND NOT IOS)
+  option(EF_MEDIA_MIMALLOC "MediaServer C++ new/delete 를 정적 mimalloc 으로" ON)
+  if(EF_MEDIA_MIMALLOC)
+    set(_ef_mi_hints)
+    foreach(_ef_prefix IN LISTS CMAKE_PREFIX_PATH)
+      get_filename_component(_ef_root "${_ef_prefix}/.." ABSOLUTE)
+      list(APPEND _ef_mi_hints "${_ef_root}/x64-windows-static-md")
+    endforeach()
+    find_library(EF_MIMALLOC_LIB NAMES mimalloc-static PATHS ${_ef_mi_hints} PATH_SUFFIXES lib NO_DEFAULT_PATH)
+    find_path(EF_MIMALLOC_INC NAMES mimalloc-new-delete.h PATHS ${_ef_mi_hints} PATH_SUFFIXES include NO_DEFAULT_PATH)
+    if(NOT EF_MIMALLOC_LIB OR NOT EF_MIMALLOC_INC)
+      message(FATAL_ERROR "[media] 정적 mimalloc 없음(${_ef_mi_hints}) — vcpkg install mimalloc:x64-windows-static-md, 또는 -DEF_MEDIA_MIMALLOC=OFF(개발용)")
+    endif()
+    target_include_directories(MediaServer PRIVATE ${EF_MIMALLOC_INC})
+    target_compile_definitions(MediaServer PRIVATE EF_MEDIA_MIMALLOC)
+    target_link_libraries(MediaServer ${EF_MIMALLOC_LIB} bcrypt psapi advapi32)
+    message(STATUS "[media] mimalloc: ${EF_MIMALLOC_LIB}")
+  endif()
+endif()
+
 if(MINGW)
   update_cached_list(MK_LINK_LIBRARIES dbghelp)
 endif()
