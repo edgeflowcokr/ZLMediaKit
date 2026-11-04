@@ -1072,6 +1072,24 @@ void installWebApi() {
     });
 #endif//#if !defined(_WIN32)
 
+    // EdgeFlowAI: 서비스 감시자(nssm AppExit=Restart)가 다시 띄우도록 정상 종료한다 — 백엔드가 기동 뒤 실행 중 설정이 config.ini 와
+    //   다를 때 새 설정을 읽히려고 부른다. SIGTERM 처리(sem.post)를 그대로 타 녹화 파일을 닫고 나가며, 15초 안에 안 끝나면 강제 종료.
+    //   서비스 자체는 멈추지 않으므로 호출자가 중간에 죽어도 미디어가 멈춘 채 남지 않는다. 윈도 restartServer 는 서비스 밖에 새
+    //   프로세스를 띄워 쓸 수 없다.
+    api_regist("/index/api/efExitForRestart", [](API_ARGS_MAP) {
+        CHECK_SECRET();
+        EventPollerPool::Instance().getPoller()->doDelayTask(500, []() {
+            WarnL << "efExitForRestart: exit so the service supervisor restarts with the current config";
+            std::thread([]() {
+                std::this_thread::sleep_for(std::chrono::seconds(15));
+                std::_Exit(0);
+            }).detach();
+            raise(SIGTERM);
+            return 0;
+        });
+        val["msg"] = "MediaServer will exit in 0.5 second";
+    });
+
     // 获取流列表，可选筛选参数  [AUTO-TRANSLATED:68ffc6b6]
     // Get stream list, optional filtering parameters
     // 测试url0(获取所有流) http://127.0.0.1/index/api/getMediaList  [AUTO-TRANSLATED:434652ea]
