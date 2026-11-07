@@ -283,6 +283,9 @@ void RtspSession::handleReq_ANNOUNCE(const Parser &parser) {
         auto src = MediaSource::find(RTSP_SCHEMA, _media_info.vhost, _media_info.app, _media_info.stream);
         auto push_failed = (bool)src;
         const char *reject_reason = "Already publishing.";
+        // EdgeFlowAI: 거절 사유를 상태 줄에도 싣는다. 송출자(ffmpeg)는 본문을 버리고 상태 줄만 출력하므로, 트랙 설정 다름(영구 — 다시
+        //   시도해도 소용없음)과 소유권 미해제(곧 풀림)를 상태 줄로만 구분할 수 있다. 코드는 406 그대로라 다른 송출자 동작은 같다.
+        const char *reject_status = "406 Not Acceptable";
 
         while (src) {
             //尝试断连后继续推流
@@ -303,6 +306,7 @@ void RtspSession::handleReq_ANNOUNCE(const Parser &parser) {
             if (!mismatch.empty()) {
                 WarnP(this) << "[continue-push] " << _media_info.shortUrl() << " 트랙 설정이 달라 이어받지 않음: " << mismatch;
                 reject_reason = "Already publishing (track config changed; close the stream first).";
+                reject_status = "406 Track Config Changed";
                 break; // ownership 은 여기서 풀린다(deleter 가 _owned 해제)
             }
             InfoP(this) << "[continue-push] " << _media_info.shortUrl() << " 이전 송출 원본을 이어받음(direct="
@@ -314,7 +318,7 @@ void RtspSession::handleReq_ANNOUNCE(const Parser &parser) {
         }
 
         if (push_failed) {
-            sendRtspResponse("406 Not Acceptable", { "Content-Type", "text/plain" }, reject_reason);
+            sendRtspResponse(reject_status, { "Content-Type", "text/plain" }, reject_reason);
             string err = StrPrinter << "ANNOUNCE: Already publishing:" << _media_info.shortUrl() << endl;
             throw SockException(Err_shutdown, err);
         }
