@@ -489,7 +489,15 @@ Value makeMediaSourceJson(MediaSource &media) {
     item["originUrl"] = media.getOriginUrl();
     item["isRecordingMP4"] = media.isRecording(Recorder::type_mp4);
     item["isRecordingHLS"] = media.isRecording(Recorder::type_hls);
-    if (auto muxer = media.getMuxer()) {
+    std::shared_ptr<MultiMediaSourceMuxer> muxer;
+    try {
+        muxer = media.getMuxer();
+    } catch (std::exception &) {
+        // EdgeFlowAI: 닫히는 중인 원본은 리스너가 풀려 getMuxer 가 「MediaSourceEvent is empty」 를 던진다. 단일 스트림 조회는 이 함수를
+        //   소유 스레드 async 안에서 부르므로 예외가 나면 응답이 영영 나가지 않아 호출자가 시간 초과까지 묶인다(2026-11-07 실측: 시연
+        //   다시 잇기의 원본 해제 대기가 5초 시간 초과). 녹화 통계만 빼고 답한다.
+    }
+    if (muxer) {
         // 가변 프레임 녹화: 키프레임만 기록 중인지·녹화기에 넘긴 누적 바이트(백엔드 녹화 쓰기 예산이 실제 쓰기량으로 쓴다).
         item["recordKeyframeOnly"] = muxer->recordKeyframeOnly();
         item["recordWrittenBytes"] = (Json::UInt64) muxer->recordWrittenBytes();
