@@ -203,6 +203,58 @@ void RtspSession::handleReq_Options(const Parser &parser) {
     sendRtspResponse("200 OK",{"Public" , "OPTIONS, DESCRIBE, SETUP, TEARDOWN, PLAY, PAUSE, ANNOUNCE, RECORD, SET_PARAMETER, GET_PARAMETER"});
 }
 
+// EdgeFlowAI: 끊긴 송출 이어받기(continue_push_ms)용 — RTSP 송출 원본 본체(RtspMediaSourceImp)를 찾는다.
+//   rtsp directProxy=0(우리 필수 설정, docs/LIVE_STREAMING_PROTOCOL.md)이면 RtspMediaSourceImp 는 스스로 등록하지 않고,
+//   rtsp 스키마에 등록되는 것은 그 MultiMediaSourceMuxer 가 만든 RtspMediaSource 다. 원래 코드처럼
+//   dynamic_pointer_cast<RtspMediaSourceImp>(src) 만 하면 늘 실패해, 송출자가 끊긴 뒤 continue_push_ms 동안 같은 스트림의
+//   새 ANNOUNCE 가 전부 406 "Already publishing" 이 된다(2026-11-07 실측 12/12, 3초 기다려도 406 — 소유권 문제가 아님).
+//   muxer 의 트랙 리스너(=송출 원본 본체)로 찾는다. RTSP 송출이 아닌 원본(RTMP 송출·풀 프록시 등)은 그대로 null → 406 유지.
+//   이전 송출 세션이 아직 살아 소유권을 쥐고 있으면 getOwnership() 이 실패해 406 유지(중복 송출 거절은 그대로).
+static RtspMediaSourceImp::Ptr findRtspPushOrigin(const MediaSource::Ptr &src) {
+    if (auto imp = dynamic_pointer_cast<RtspMediaSourceImp>(src)) {
+        return imp;
+    }
+    try {
+        auto muxer = src->getMuxer();
+        if (!muxer) {
+            return nullptr;
+        }
+        return dynamic_pointer_cast<RtspMediaSourceImp>(muxer->getTrackListener().lock());
+    } catch (std::exception &ex) {
+        // 리스너가 이미 풀림 등(원본 등록 해제 중): 이어받을 수 없으니 원래대로 406
+        DebugL << "find rtsp push origin failed: " << src->getUrl() << " " << ex.what();
+        return nullptr;
+    }
+}
+
+// EdgeFlowAI: 이어받기 전 트랙 설정 비교 — 같으면 빈 문자열, 다르면 차이 설명. 종류·코덱·샘플레이트·채널·fmtp(H.264 는
+//   sprop-parameter-sets=SPS/PPS·profile-level-id 가 여기 있다)를 본다. control·포트 등 전송 정보는 보지 않는다.
+static std::string rtspTrackConfigMismatch(const std::string &old_sdp, const std::string &new_sdp) {
+    auto old_tracks = SdpParser(old_sdp).getAvailableTrack();
+    auto new_tracks = SdpParser(new_sdp).getAvailableTrack();
+    if (old_tracks.size() != new_tracks.size()) {
+        return StrPrinter << "track count " << old_tracks.size() << "->" << new_tracks.size();
+    }
+    for (auto &nt : new_tracks) {
+        SdpTrack::Ptr ot;
+        for (auto &t : old_tracks) {
+            if (t->_type == nt->_type) {
+                ot = t;
+                break;
+            }
+        }
+        if (!ot) {
+            return StrPrinter << "new track type " << getTrackString(nt->_type);
+        }
+        if (strcasecmp(ot->_codec.data(), nt->_codec.data()) || ot->_samplerate != nt->_samplerate || ot->_channel != nt->_channel
+            || ot->_fmtp != nt->_fmtp) {
+            return StrPrinter << getTrackString(nt->_type) << " " << ot->_codec << "/" << ot->_samplerate << " fmtp=" << ot->_fmtp
+                              << " -> " << nt->_codec << "/" << nt->_samplerate << " fmtp=" << nt->_fmtp;
+        }
+    }
+    return "";
+}
+
 void RtspSession::handleReq_ANNOUNCE(const Parser &parser) {
     auto full_url = parser.fullUrl();
     _content_base = full_url;
@@ -230,10 +282,11 @@ void RtspSession::handleReq_ANNOUNCE(const Parser &parser) {
         assert(!_push_src);
         auto src = MediaSource::find(RTSP_SCHEMA, _media_info.vhost, _media_info.app, _media_info.stream);
         auto push_failed = (bool)src;
+        const char *reject_reason = "Already publishing.";
 
         while (src) {
             //尝试断连后继续推流
-            auto rtsp_src = dynamic_pointer_cast<RtspMediaSourceImp>(src);
+            auto rtsp_src = findRtspPushOrigin(src);
             if (!rtsp_src) {
                 //源不是rtsp推流产生的
                 break;
@@ -243,6 +296,17 @@ void RtspSession::handleReq_ANNOUNCE(const Parser &parser) {
                 //获取推流源所有权失败
                 break;
             }
+            // EdgeFlowAI: 이어받으면 새 SDP 는 버려지고 원본의 기존 트랙(SPS/PPS 등)이 그대로 쓰인다. 트랙 설정이 다르면 플레이어·노드가
+            //   새 프레임을 못 푼다(2026-11-07 실측: 같은 해상도·다른 프로파일 → decode_slice_header error, 해상도 다름 → 깨진 프레임).
+            //   그래서 설정이 같을 때만 이어받고, 다르면 소유권을 도로 놓고 원래대로 406 — 송출자는 원본을 닫고(close_streams) 새로 연다.
+            auto mismatch = rtspTrackConfigMismatch(rtsp_src->getSdp(), parser.content());
+            if (!mismatch.empty()) {
+                WarnP(this) << "[continue-push] " << _media_info.shortUrl() << " 트랙 설정이 달라 이어받지 않음: " << mismatch;
+                reject_reason = "Already publishing (track config changed; close the stream first).";
+                break; // ownership 은 여기서 풀린다(deleter 가 _owned 해제)
+            }
+            InfoP(this) << "[continue-push] " << _media_info.shortUrl() << " 이전 송출 원본을 이어받음(direct="
+                        << (rtsp_src == src) << ")";
             _push_src = std::move(rtsp_src);
             _push_src_ownership = std::move(ownership);
             push_failed = false;
@@ -250,7 +314,7 @@ void RtspSession::handleReq_ANNOUNCE(const Parser &parser) {
         }
 
         if (push_failed) {
-            sendRtspResponse("406 Not Acceptable", { "Content-Type", "text/plain" }, "Already publishing.");
+            sendRtspResponse("406 Not Acceptable", { "Content-Type", "text/plain" }, reject_reason);
             string err = StrPrinter << "ANNOUNCE: Already publishing:" << _media_info.shortUrl() << endl;
             throw SockException(Err_shutdown, err);
         }

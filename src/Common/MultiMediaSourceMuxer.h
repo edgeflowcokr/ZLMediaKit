@@ -73,6 +73,10 @@ public:
      */
     void setTrackListener(const std::weak_ptr<Listener> &listener);
 
+    // EdgeFlowAI: 트랙 준비 리스너(=송출 원본 본체, 예: RtspMediaSourceImp). rtsp directProxy=0 이면 원본 본체가 등록되지 않아
+    //   끊긴 송출 이어받기(RtspSession ANNOUNCE)가 muxer 를 거쳐 원본 본체를 찾는다.
+    std::weak_ptr<Listener> getTrackListener() const { return _track_listener; }
+
     /**
      * 返回总的消费者个数
      * Return the total number of consumers
