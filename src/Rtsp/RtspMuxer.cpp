@@ -174,6 +174,10 @@ void RtspMuxer::resetTracks() {
     _sdp.clear();
     _tracks.clear();
     CLEAR_ARR(_track_existed);
+    // 트랙 번호(trackID·동적 payload type 96+_index)도 처음부터 다시 센다. 안 되돌리면 트랙 설정이 다른 재연결
+    // (PlayerProxy 호환 안 되는 재연결 → resetTracks)마다 오르다가 32번째에 payload type 이 128 을 넘는다 —
+    // RTP 헤더는 7비트라 SDP(128 이상)와 패킷(값 & 0x7F)이 어긋나 RTSP 시청자가 패킷을 하나도 못 받는다(fMP4 는 무관).
+    _index = 0;
 }
 
 } /* namespace mediakit */

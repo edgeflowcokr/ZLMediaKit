@@ -232,10 +232,37 @@ static void rtspDemandReordering() {
         check(always->inputFrame(nal(1000,true)),"rtsp_demand_disabled_policy_is_unchanged");always.reset();
     });
 }
+// 트랙 설정이 다른 재연결마다 PlayerProxy 가 resetTracks 를 부른다(시연 소스 순환). 재설정이 trackID·payload type 을
+// 올리면 32번째에 128 을 넘어 RTP 헤더(7비트)와 SDP 가 어긋나 RTSP 시청자가 패킷 0 이 됐다(2026-11-09 .5 시연 채널).
+static void rtspResetKeepsPayloadType() {
+    auto poller=EventPollerPool::Instance().getPoller();
+    auto events=std::make_shared<DemandEvents>(poller);
+    ProtocolOption option;
+    auto mux=std::make_shared<RtspMediaSourceMuxer>(MediaTuple{"__defaultVhost__","reset-test","rtsp-reset",""},option);
+    mux->setListener(events);
+    poller->sync([&] {
+        bool stable=true;
+        for(int i=0;i<40;++i){
+            if(i)mux->resetTracks();
+            mux->addTrack(video());mux->addTrackCompleted();
+            auto sdp=mux->getSdp();
+            stable=stable&&sdp.find("RTP/AVP 96\r\n")!=std::string::npos&&sdp.find("a=control:trackID=0\r\n")!=std::string::npos;
+        }
+        check(stable,"rtsp_reset_tracks_keeps_payload_type_and_track_id");
+        // RTSP 원본은 시각이 바뀔 때 앞 프레임 묶음을 ring 에 쓴다 — 두 번째 프레임까지 넣는다.
+        mux->inputFrame(nal(1000,true));mux->inputFrame(nal(1040,false));mux->flush();
+        auto source=std::dynamic_pointer_cast<RtspMediaSource>(mux->getMediaSource());
+        int pt=-1;
+        if(source->getRing())source->getRing()->flushGop([&](const RtspMediaSource::RingDataType &list){if(pt<0&&!list->empty())pt=list->front()->getHeader()->pt;});
+        check(pt==96,"rtsp_reset_tracks_rtp_header_matches_sdp_payload_type");
+    });
+    poller->sync([&] {mux.reset();});
+}
 int main(){
     demandReordering();
     liveDiagnosticGates();
     rtspDemandReordering();
+    rtspResetKeepsPayloadType();
     run({0,40,41,100,800,801,820,860,1000,1001},"irregular_cadence_fragment_ends_at_exact_next_dts");
     run({0,40,80,120,160,200,240,280,320,360},"constant_cadence_is_unchanged");
     std::vector<uint64_t> long_gop={0};for(size_t i=1;i<230;++i)long_gop.push_back(long_gop.back()+(i%2?40:1));
