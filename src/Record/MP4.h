@@ -14,6 +14,8 @@
 #if defined(ENABLE_MP4)
 
 #include <memory>
+#include <cstdio>
+#include <cstdint>
 #include <string>
 #include "mp4-writer.h"
 #include "mov-writer.h"
@@ -143,6 +145,9 @@ protected:
     int onSeek(int64_t offset) override;
     int onRead(void *data, size_t bytes) override;
     int onWrite(const void *data, size_t bytes) override;
+
+    // EOF와 커서를 유지한 채 공간만 예약한다. 0은 성공 또는 해당 OS의 무동작, 나머지는 OS 오류코드다.
+    virtual uint32_t preallocateFile(FILE *fp, uint64_t bytes);
 
 private:
     std::shared_ptr<FILE> _file;

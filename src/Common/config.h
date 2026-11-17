@@ -509,6 +509,8 @@ extern const std::string kSampleMS;
 // mp4文件写缓存大小  [AUTO-TRANSLATED:9904413d]
 // MP4 file write cache size
 extern const std::string kFileBufSize;
+// 새 MP4 쓰기 파일의 미리 할당 크기(1MB=1024*1024바이트, 기본 0, 정수 [0,2048]). 읽기에는 적용하지 않는다.
+extern const std::string kPreallocMB;
 // mp4录制完成后是否进行二次关键帧索引写入头部  [AUTO-TRANSLATED:53cfdcb5]
 // Whether to perform secondary keyframe index writing to the header after MP4 recording is completed
 extern const std::string kFastStart;

@@ -8,12 +8,29 @@
  * may be found in the AUTHORS file in the root of the source tree.
  */
 
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+// fallocate 선언은 첫 시스템 헤더보다 앞에서 GNU 기능을 켜야 보장된다.
+#define _GNU_SOURCE
+#endif
+
 #if defined(ENABLE_MP4)
 
 #include "MP4.h"
 #include "Util/File.h"
 #include "Util/logger.h"
 #include "Common/config.h"
+#include <algorithm>
+#include <atomic>
+#include <cerrno>
+#include <cstring>
+#include <limits>
+#if defined(_WIN32)
+#include <io.h>
+#include <windows.h>
+#elif defined(__linux__)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 using namespace toolkit;
 using namespace std;
@@ -81,6 +98,49 @@ MP4FileIO::Reader MP4FileIO::createReader(){
     #define ftell64 ftell
 #endif
 
+static uint64_t recordPreallocBytes(const std::string &raw) {
+    size_t pos = 0;
+    const bool negative = !raw.empty() && raw[0] == '-';
+    if (!raw.empty() && (raw[0] == '-' || raw[0] == '+')) ++pos;
+    bool valid = pos < raw.size();
+    unsigned mb = 0;
+    for (; pos < raw.size(); ++pos) {
+        const char c = raw[pos];
+        if (c < '0' || c > '9') { valid = false; break; }
+        // 임의 길이 숫자도 곱셈 전에 상한을 묶어 정수 오버플로를 피한다.
+        if (mb <= 2048) mb = (std::min)(2049u, mb * 10 + static_cast<unsigned>(c - '0'));
+    }
+    const unsigned clamped = !valid || negative ? 0u : (std::min)(2048u, mb);
+    if (!valid || (negative && mb) || mb > 2048) {
+        static std::atomic_flag warned = ATOMIC_FLAG_INIT;
+        if (!warned.test_and_set()) {
+            WarnL << "[recording-io] 미리 할당 설정 보정: record.preallocMB=" << raw.substr(0, 64)
+                  << " 허용범위=정수[0,2048] 적용_MB=" << clamped << " 경고=프로세스당1회";
+        }
+    }
+    return static_cast<uint64_t>(clamped) * 1024 * 1024;
+}
+
+uint32_t MP4FileDisk::preallocateFile(FILE *fp, uint64_t bytes) {
+    if (!bytes) return 0;
+#if defined(_WIN32)
+    const auto handle = _get_osfhandle(_fileno(fp));
+    if (handle == -1) return ERROR_INVALID_HANDLE;
+    FILE_ALLOCATION_INFO allocation = {};
+    allocation.AllocationSize.QuadPart = static_cast<LONGLONG>(bytes);
+    // CRT가 소유한 핸들이다. EOF 변경·자르기·별도 CloseHandle을 하지 않는다.
+    return SetFileInformationByHandle(reinterpret_cast<HANDLE>(handle), FileAllocationInfo,
+                                      &allocation, sizeof(allocation)) ? 0 : GetLastError();
+#elif defined(__linux__)
+    if (bytes > static_cast<uint64_t>((std::numeric_limits<off_t>::max)())) return EOVERFLOW;
+    return fallocate(fileno(fp), FALLOC_FL_KEEP_SIZE, 0, static_cast<off_t>(bytes)) == 0 ? 0 : errno;
+#else
+    // 지원 API가 없는 OS에서는 기존 순차 쓰기를 그대로 사용한다.
+    (void)fp;
+    return 0;
+#endif
+}
+
 void MP4FileDisk::openFile(const char *file, const char *mode) {
     // 创建文件  [AUTO-TRANSLATED:bd145ed5]
     // Create a file
@@ -109,6 +169,32 @@ void MP4FileDisk::openFile(const char *file, const char *mode) {
         // 设置文件io缓存  [AUTO-TRANSLATED:0ed9c8ad]
         // Set the file io cache
         setvbuf(fp, file_buf.get(), _IOFBF, mp4BufSize);
+    }
+
+    // 새로 쓰는 MP4만 대상이다. rb/rb+ 읽기·기존 파일 갱신·추가 열기는 예약하지 않는다.
+    if (mode && std::strcmp(mode, "wb+") == 0) {
+        GET_CONFIG_FUNC(uint64_t, preallocBytes, Record::kPreallocMB, recordPreallocBytes);
+        const uint64_t bytes = preallocBytes;
+        if (bytes) {
+            const int saved_errno = errno;
+#if defined(_WIN32)
+            const DWORD saved_error = GetLastError();
+#endif
+            const uint32_t error = preallocateFile(fp, bytes);
+            if (error) {
+                // 프로세스 전체 예약 실패는 60초당 한 줄로 제한하고 생략 건수를 다음 경고에 합친다.
+                static RecordIoLimiter limiter;
+                uint64_t suppressed = 0;
+                if (limiter.claim(RecordIoOp::Create, RecordIoTrace::now(), suppressed)) {
+                    WarnL << "[recording-io] 미리 할당 실패: 작업=미리할당 경로=" << file << " 요청_바이트=" << bytes
+                          << " 오류코드=" << error << " 생략_건수=" << suppressed << " 녹화=기존쓰기계속";
+                }
+            }
+            errno = saved_errno;
+#if defined(_WIN32)
+            SetLastError(saved_error);
+#endif
+        }
     }
 
     // 创建智能指针  [AUTO-TRANSLATED:e7920ab2]
