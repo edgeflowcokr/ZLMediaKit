@@ -529,6 +529,8 @@ extern const std::string kQueueMaxMB;
 // 디스크 호출 1회 정지 허용시간(ms, 기본 90000, 범위 [5000,600000]). 이내 정지는 큐 여유가 있는 한 녹화 유지.
 // A single disk call running longer than this fails the recorder; shorter stalls are absorbed by the queue.
 extern const std::string kStallToleranceMs;
+// 프로세스 전체 녹화 작업자 상한(기본 256, [8, 4096]) — 예전 하드코딩 32 대체.
+extern const std::string kMaxWorkers;
 } // namespace Record
 
 // //////////HLS相关配置///////////  [AUTO-TRANSLATED:873cc84c]

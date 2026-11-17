@@ -339,6 +339,7 @@ const string kEnableFmp4 = RECORD_FIELD "enableFmp4";
 const string kEventPreBufferFrames = RECORD_FIELD "eventPreBufferFrames";
 const string kQueueMaxMB = RECORD_FIELD "queueMaxMB";
 const string kStallToleranceMs = RECORD_FIELD "stallToleranceMs";
+const string kMaxWorkers = RECORD_FIELD "maxWorkers";
 
 static onceToken token([]() {
     mINI::Instance()[kAppName] = "record";
@@ -360,6 +361,8 @@ static onceToken token([]() {
     // 디스크 호출 1회 정지 허용시간(ms). 넘기면 녹화기 실패(받은 프레임은 써서 마감)→교체. 이내면 큐 여유가 있는 한 녹화 유지.
     // SMR 실측 최대 정지 65.7초 + 여유 → 기본 90000. 허용 범위 [5000, 600000].
     mINI::Instance()[kStallToleranceMs] = 90000;
+    // 프로세스 전체 녹화 작업자 상한(연속 + 진행 중 이벤트 클립). 백엔드가 라이선스 채널 수 x 2 + 여유로 렌더. [8, 4096].
+    mINI::Instance()[kMaxWorkers] = 256;
 });
 } // namespace Record
 

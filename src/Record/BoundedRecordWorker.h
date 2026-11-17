@@ -38,9 +38,15 @@ struct RecordQueueLimits {
     // 설정 허용 범위(Recorder.cpp configured()·백엔드 mediaconfig 클램프와 동일해야 한다).
     enum : int { kDefaultQueueMB = 96, kMinQueueMB = 4, kMaxQueueMB = 256 };
     enum : int { kDefaultStallMs = 90000, kMinStallMs = 5000, kMaxStallMs = 600000 };
+    // 프로세스 전체 녹화 작업자 상한(연속 녹화 + 진행 중 이벤트 클립). 예전에는 32 로 하드코딩돼 32채널 넘는 현장(.30 46채널)에서
+    // 14채널이 녹화되지 않았다(2026-11-17). 백엔드가 [record]maxWorkers 를 라이선스 채널 수 x 2 + 여유로 렌더한다.
+    // 디스크 정지 때 작업자가 쌓이는 것을 막는 안전장치 역할은 유지(최악 상주 = 이 값 x max_bytes).
+    enum : int { kDefaultMaxWorkers = 256, kMinMaxWorkers = 8, kMaxMaxWorkers = 4096 };
+    int max_workers = kDefaultMaxWorkers;
     // 녹화기 하나의 상주 바이트 예산(페이로드 + 항목당 오버헤드, 처리 중 항목 포함).
     // 크기 규칙: 예산 >= 비트레이트 x 허용시간 x 1.2. .5 실측 스트림 최대 6.8Mbps → 6.8/8 x 90 x 1.2 ≈ 92MB → 96MiB.
-    // 최악 상주 메모리 = 전역 작업자 상한 32 x 예산(기본 3GiB). 실제는 (녹화 채널 + 진행 중 이벤트 클립) x 예산.
+    // 최악 상주 메모리 = 전역 작업자 상한(max_workers) x 예산. 실제는 (녹화 채널 + 진행 중 이벤트 클립) x 예산이고,
+    // 예산이 다 차는 것은 디스크가 정지한 녹화기뿐이다.
     size_t max_bytes = static_cast<size_t>(kDefaultQueueMB) * 1024 * 1024;
     // 디스크 호출 1회가 이 시간을 넘기면 작업자 실패(큐 여유와 무관). 이하이면 큐 여유가 있는 한 정상.
     // 기본 90초 = SMR 실측 최대 정지 65.7초 + 여유.
@@ -191,7 +197,12 @@ public:
         state->limits = limits;
         state->observe = std::move(observe);
         state->last_report = now();
-        if (slots().fetch_add(1) >= 32) { --slots(); throw std::runtime_error("record worker limit reached (32); storage may be stalled"); }
+        const unsigned cap = static_cast<unsigned>(limits.max_workers > 0 ? limits.max_workers : RecordQueueLimits::kDefaultMaxWorkers);
+        if (slots().fetch_add(1) >= cap) {
+            --slots();
+            throw std::runtime_error("record worker limit reached (" + std::to_string(cap)
+                + "); recording channels exceed [record]maxWorkers or storage may be stalled");
+        }
         try {
             std::thread([state]() {
                 for (;;) {

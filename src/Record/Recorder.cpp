@@ -127,8 +127,16 @@ RecordQueueLimits RecordQueueLimits::configured() {
     //   stallToleranceMs 상한 600000(10분): 그 이상 멈춘 디스크는 사실상 고장이라 녹화기 교체 경로로 넘긴다.
     GET_CONFIG(int, queueMaxMB, Record::kQueueMaxMB);
     GET_CONFIG(int, stallToleranceMs, Record::kStallToleranceMs);
+    GET_CONFIG(int, maxWorkers, Record::kMaxWorkers);
     std::string warning;
     auto limits = fromSettings(queueMaxMB, stallToleranceMs, &warning);
+    // 작업자 상한(record.maxWorkers): 0 이하 기본 256, 범위 [8, 4096] 밖은 경계값.
+    limits.max_workers = clampSetting(maxWorkers, kDefaultMaxWorkers, kMinMaxWorkers, kMaxMaxWorkers);
+    if (limits.max_workers != maxWorkers) {
+        static std::atomic<int> warnedWorkers { INT_MIN };
+        if (warnedWorkers.exchange(maxWorkers) != maxWorkers)
+            WarnL << "[recording-queue] config clamped: record.maxWorkers=" << maxWorkers << " -> " << limits.max_workers;
+    }
     if (!warning.empty()) {
         // 녹화기 생성마다 반복 출력하지 않도록 원래 설정값 조합이 바뀔 때만 로그.
         static std::atomic<unsigned long long> warned { ULLONG_MAX };
