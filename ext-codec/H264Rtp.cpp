@@ -34,6 +34,8 @@ public:
 #pragma pack(pop)
 
 H264RtpDecoder::H264RtpDecoder() {
+    // 첫 키프레임 전의 불완전한 GOP가 DTS 판정에 들어가지 않게 한다.
+    _gop_dropped = true;
     _frame = obtainFrame();
 }
 
@@ -224,9 +226,13 @@ bool H264RtpDecoder::decodeRtp(const RtpPacket::Ptr &rtp) {
 }
 
 void H264RtpDecoder::outputFrame(const RtpPacket::Ptr &rtp, const H264Frame::Ptr &frame) {
-    if (frame->dropAble()) {
-        // 不参与dts生成  [AUTO-TRANSLATED:dff3b747]
-        // Not involved in dts generation
+    if (frame->keyFrame() && _gop_dropped) {
+        _gop_dropped = false;
+        InfoL << "새 GOP 수신, seq=" << rtp->getSeq() << ", ssrc=" << rtp->getSSRC();
+    }
+
+    if (frame->dropAble() || _gop_dropped) {
+        // 설정 프레임과 키프레임 전 폐기 프레임은 DTS 판정에 참여하지 않는다.
         frame->_dts = frame->_pts;
     } else {
         // rtsp没有dts，那么根据pts排序算法生成dts  [AUTO-TRANSLATED:f37c17f3]
@@ -234,10 +240,6 @@ void H264RtpDecoder::outputFrame(const RtpPacket::Ptr &rtp, const H264Frame::Ptr
         _dts_generator.getDts(frame->_pts, frame->_dts);
     }
 
-    if (frame->keyFrame() && _gop_dropped) {
-        _gop_dropped = false;
-        InfoL << "new gop received, seq=" << rtp->getSeq() << ", ssrc=" << rtp->getSSRC();
-    }
     if (!_gop_dropped || frame->configFrame()) {
         RtpCodec::inputFrame(frame);
     }

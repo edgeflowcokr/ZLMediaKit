@@ -178,6 +178,8 @@ private:
     size_t _frames_since_last_max_pts = 0;
     size_t _sorter_max_size = 0;
     size_t _count_sorter_max_size = 0;
+    size_t _dts_restart_count = 0; // 생성기 수명 동안 재판정을 최대 8회로 제한한다.
+    bool _dts_restart_limit_warned = false;
     std::set<uint64_t> _pts_sorter;
 };
 

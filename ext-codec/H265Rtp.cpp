@@ -28,6 +28,8 @@ namespace mediakit{
 */
 
 H265RtpDecoder::H265RtpDecoder() {
+    // 첫 키프레임 전의 불완전한 GOP가 DTS 판정에 들어가지 않게 한다.
+    _gop_dropped = true;
     _frame = obtainFrame();
 }
 
@@ -187,11 +189,12 @@ bool H265RtpDecoder::mergeFu(const RtpPacket::Ptr &rtp, const uint8_t *ptr, ssiz
 bool H265RtpDecoder::inputRtp(const RtpPacket::Ptr &rtp, bool) {
     auto seq = rtp->getSeq();
     auto last_is_gop = _is_gop;
-    _is_gop = decodeRtp(rtp);
+    // 유실 상태를 먼저 정해야 해당 패킷의 키프레임이 복구한 GOP를 다시 폐기하지 않는다.
     if (!_gop_dropped && seq != (uint16_t) (_last_seq + 1) && _last_seq) {
         _gop_dropped = true;
-        WarnL << "start drop h265 gop, last seq:" << _last_seq << ", rtp:\r\n" << rtp->dumpString();
+        WarnL << "H265 GOP 폐기 시작, 이전 seq=" << _last_seq << ", rtp:\r\n" << rtp->dumpString();
     }
+    _is_gop = decodeRtp(rtp);
     _last_seq = seq;
     // 确保有sps rtp的时候，gop从sps开始；否则从关键帧开始  [AUTO-TRANSLATED:115ae07c]
     // Ensure that when there is sps rtp, gop starts from sps; otherwise, it starts from the key frame
@@ -241,9 +244,13 @@ bool H265RtpDecoder::singleFrame(const RtpPacket::Ptr &rtp, const uint8_t *ptr, 
 }
 
 void H265RtpDecoder::outputFrame(const RtpPacket::Ptr &rtp, const H265Frame::Ptr &frame) {
-    if (frame->dropAble()) {
-        // 不参与dts生成  [AUTO-TRANSLATED:dff3b747]
-        // Not involved in dts generation
+    if (frame->keyFrame() && _gop_dropped) {
+        _gop_dropped = false;
+        InfoL << "새 GOP 수신, rtp:\r\n" << rtp->dumpString();
+    }
+
+    if (frame->dropAble() || _gop_dropped) {
+        // 설정 프레임과 키프레임 전 폐기 프레임은 DTS 판정에 참여하지 않는다.
         frame->_dts = frame->_pts;
     } else {
         // rtsp没有dts，那么根据pts排序算法生成dts  [AUTO-TRANSLATED:f37c17f3]
@@ -251,10 +258,6 @@ void H265RtpDecoder::outputFrame(const RtpPacket::Ptr &rtp, const H265Frame::Ptr
         _dts_generator.getDts(frame->_pts, frame->_dts);
     }
 
-    if (frame->keyFrame() && _gop_dropped) {
-        _gop_dropped = false;
-        InfoL << "new gop received, rtp:\r\n" << rtp->dumpString();
-    }
     if (!_gop_dropped || frame->configFrame()) {
         RtpCodec::inputFrame(frame);
     }

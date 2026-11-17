@@ -271,11 +271,18 @@ bool DtsGenerator::getDts(uint64_t pts, uint64_t &dts) {
     }
 
     if (!ret) {
-        // pts排序列队长度还不知道，也就是不知道有没有B帧，  [AUTO-TRANSLATED:e5ad4327]
-        // The pts sorting queue length is not yet known, that is, it is not known whether there is a B frame,
-        // 那么先强制dts == pts，这样可能导致有B帧的情况下，起始画面有几帧回退  [AUTO-TRANSLATED:74c97de1]
-        // Then force dts == pts first, which may cause the starting picture to have a few frames rollback in the case of B frames
-        dts = pts;
+        if (_dts_restart_count) {
+            // B프레임이 확인된 재판정 구간에서는 새 잠정 DTS를 유지한다.
+            // 다시 dts=pts로 보내면 P의 급증과 B의 역행을 Relative가 중복 누적한다.
+            // 더 작은 PTS가 오면 기준을 낮춰 잠정 DTS도 PTS를 넘지 않게 한다.
+            if (pts < _last_dts) {
+                _last_dts = pts;
+            }
+            dts = _last_dts;
+        } else {
+            // 첫 판정 전의 임시 dts=pts는 유지하므로 I/P 스트림 동작은 바뀌지 않는다.
+            dts = pts;
+        }
     }
 
     // 记录上次pts  [AUTO-TRANSLATED:4ecd474b]
@@ -290,10 +297,39 @@ bool DtsGenerator::getDts(uint64_t pts, uint64_t &dts) {
 // Sorting has a certain lag, so it is necessary to add the timestamp offset caused by sorting
 bool DtsGenerator::getDts_l(uint64_t pts, uint64_t &dts) {
     if (_sorter_max_size == 1) {
-        // 没有B帧，dts就等于pts  [AUTO-TRANSLATED:9cfae4ea]
-        // There is no B frame, dts is equal to pts
-        dts = pts;
-        return true;
+        // 기존 판정은 최대 PTS 사이의 프레임 수를 두 번 관찰하므로 B1부터 받으면
+        // 오름차순인 초반 B프레임만 보고 크기 1로 확정할 수 있다. 이후 역행을 재검사한다.
+        // B가 없는 I/P 스트림은 PTS가 비감소하므로 기존 dts=pts 반환을 유지한다.
+        // 비교와 최대값 갱신만 추가하며 정렬·할당·재판정 없이 기존 상수 시간 경로를 따른다.
+        if (pts >= _last_max_pts) {
+            _last_max_pts = pts;
+            dts = pts;
+            return true;
+        }
+
+        constexpr size_t max_restarts = 8;
+        if (_dts_restart_count >= max_restarts) {
+            if (!_dts_restart_limit_warned) {
+                WarnL << "[stamp] DTS 판정 재시작 상한 도달: PTS가 직전 최대값보다 작음, pts=" << pts
+                      << ", 이전 최대 pts=" << _last_max_pts << ", 누적 횟수=" << _dts_restart_count
+                      << ", 상한=" << max_restarts << ", 마지막 판정 유지";
+                _dts_restart_limit_warned = true;
+            }
+            dts = pts;
+            return true;
+        }
+
+        ++_dts_restart_count;
+        WarnL << "[stamp] B프레임 감지 — DTS 판정 재시작: PTS가 직전 최대값보다 작음, pts=" << pts
+              << ", 이전 최대 pts=" << _last_max_pts << ", 누적 횟수=" << _dts_restart_count;
+        _sorter_max_size = 0;
+        _count_sorter_max_size = 0;
+        _frames_since_last_max_pts = 0;
+        _pts_sorter.clear();
+        _dts_pts_offset = 0;
+        _last_dts = pts; // 이전 판정의 DTS 대신 현재 입력을 재판정의 새 잠정 기준으로 쓴다.
+        // 직전 최대 PTS는 보존해 현재 B프레임부터 하강 구간을 센다.
+        // 누적 횟수와 상한 경고 상태도 보존해 반복 재시작과 로그를 제한한다.
     }
 
     if (!_sorter_max_size) {
