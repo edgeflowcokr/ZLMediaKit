@@ -71,6 +71,15 @@ MP4Recorder::MP4Recorder(const MediaTuple &tuple, const string &path, size_t max
     _info.folder = path;
     GET_CONFIG(uint32_t, s_max_second, Protocol::kMP4MaxSecond);
     _max_second = max_second ? max_second : s_max_second;
+    _slice_second = _max_second;
+}
+
+// 스트림별 고정 위상(0 ~ 길이-1초). 같은 스트림은 재접속·재기동 뒤에도 같은 위상이라 전환 시각 분포가 유지된다.
+static size_t recordSlicePhase(const MediaTuple &tuple, size_t slice_second) {
+    if (slice_second < 2) {
+        return 0;
+    }
+    return std::hash<std::string>()(tuple.vhost + "/" + tuple.app + "/" + tuple.stream) % slice_second;
 }
 
 MP4Recorder::~MP4Recorder() {
@@ -96,6 +105,14 @@ void MP4Recorder::createFile() {
     // ///record 业务逻辑//////  [AUTO-TRANSLATED:2e78931a]
     // ///record Business Logic//////
     _info.start_time = start;
+    if (_first_slice) {
+        _first_slice = false;
+        const size_t phase = recordSlicePhase(_info, _max_second);
+        _slice_second = _max_second - phase; // phase 0 이면 그대로
+        InfoL << "[record-slice-stagger] stream=" << _info.shortUrl() << " first_slice=" << _slice_second << "s phase=" << phase << "s max=" << _max_second << "s";
+    } else {
+        _slice_second = _max_second;
+    }
     _info.file_name = file_name;
     _info.file_path = full_path;
     GET_CONFIG(string, appName, Record::kAppName);
@@ -191,8 +208,8 @@ bool MP4Recorder::inputFrame(const Frame::Ptr &frame) {
     // 파일을 연 뒤 수신 벽시계로 슬라이스 길이가 지났는지도 본다. DeltaStamp 는 300ms 넘는 간격을 직전 간격으로
     // 눌러서, 키프레임만 기록(RecordThinner, 1~2초 간격) 중엔 상대 시각이 거의 늘지 않아 파일이 끝없이 커졌다(결함 805).
     const time_t wall_now = _ingest_wall ? _ingest_wall : ::time(NULL);
-    const bool wall_due = _muxer && wall_now - _info.start_time >= (time_t)_max_second;
-    if (!_muxer || ((stamp_inc > int64_t(_max_second) * 1000 || wall_due) && (!_have_video || frame->keyFrame()))) {
+    const bool wall_due = _muxer && wall_now - _info.start_time >= (time_t)_slice_second;
+    if (!_muxer || ((stamp_inc > int64_t(_slice_second) * 1000 || wall_due) && (!_have_video || frame->keyFrame()))) {
         // 成立条件  [AUTO-TRANSLATED:8c9c6083]
         // Conditions for establishment
         // 1、_muxer为空  [AUTO-TRANSLATED:fa236097]
@@ -229,6 +246,8 @@ void MP4Recorder::resetTracks() {
     closeFile();
     _tracks.clear();
     _have_video = false;
+    _first_slice = true; // 트랙 재설정이 여러 채널에 동시에 오면(미디어 재연결 등) 다음 파일도 위상만큼 엇갈리게
+
 }
 
 } /* namespace mediakit */

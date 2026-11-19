@@ -87,6 +87,11 @@ private:
     bool _inline_close = false;
     bool _have_video = false;
     size_t _max_second;
+    // 현재 파일의 목표 길이(초). 첫 파일만 스트림별 위상만큼 짧게 끊어 채널마다 전환 시각을 엇갈리게 한다 —
+    // 함께 시작한 녹화기 46개가 같은 2초 안에 동시에 마감(mdat 크기 되돌아가 쓰기·moov·버퍼 배출·새 파일)해
+    // 녹화 HDD 가 5분마다 포화되던 문제(0.30 실측 2026-11-19, 포화 표본 12개 중 5개가 전환 7~12초 뒤).
+    size_t _slice_second;
+    bool _first_slice = true;
     time_t _ingest_wall = 0; // 현재 입력 프레임의 수신 벽시계(0=모름 → 처리 시각)
     time_t _last_ingest_wall = 0; // 현재 파일의 마지막 프레임 수신 벽시계(End 시각 제한용, 0=모름)
     DeltaStamp _delta_stamp[TrackMax];
