@@ -18,7 +18,11 @@ namespace mediakit {
 class SockInfoImp : public Session {
 public:
     using Ptr = std::shared_ptr<SockInfoImp>;
-    SockInfoImp(const Socket::Ptr &sock) : Session(sock) {}
+    // Session 생성자는 소켓 종류만 확인하면 되므로 받은 뒤 바로 놓는다. 쿠키(kHlsCookieSecond=60)가 소켓을 쥐고 있으면
+    // HttpSession 이 keepAlive(30초)로 끝나도 소켓이 닫히지 않아, 그 연결에 온 다음 요청이 처리되지 않고 매달렸다
+    // (EdgeFlowAI .5 2026-11-21: 백엔드가 30~60초 쉰 연결을 재사용해 HLS·WHEP·API 가 시간 초과 → 502, CloseWait 수십 개 누적).
+    // 식별자·주소는 아래 필드에 복사해 두므로 getMediaPlayerList·유량 보고는 그대로 동작한다.
+    SockInfoImp(const Socket::Ptr &sock) : Session(sock) { setSock(nullptr); }
 
     std::string get_local_ip() override { return _local_ip; }
 
