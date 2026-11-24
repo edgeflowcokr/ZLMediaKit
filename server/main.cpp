@@ -26,6 +26,7 @@
 #include "Rtp/RtpServer.h"
 #include "WebApi.h"
 #include "WebHook.h"
+#include "KeyframeRelay.h"
 
 #if defined(ENABLE_WEBRTC)
 #include "../webrtc/WebRtcTransport.h"
@@ -437,6 +438,7 @@ int start_main(int argc,char *argv[]) {
         InfoL << "已启动http api 接口";
         installWebHook();
         InfoL << "已启动http hook 接口";
+        installKeyframeRelay(); // EdgeFlowAI: <스트림>~key 키프레임만 라이브 갈래
 
         try {
             // rtsp服务器，端口默认554  [AUTO-TRANSLATED:07937d81]
