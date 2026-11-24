@@ -11,6 +11,7 @@
 #include "Common/config.h"
 #include "Extension/Frame.h"
 #include "Extension/Track.h"
+#include "Rtsp/RtspMediaSource.h"
 #include "Poller/EventPoller.h"
 #include "Poller/Timer.h"
 #include "Util/NoticeCenter.h"
@@ -81,6 +82,10 @@ public:
             ++self->_keyframes;
             return self->_muxer->inputFrame(frame);
         });
+        // 원본 RTSP 링에 시청자로 붙는다 — 녹화기·짝 서버 중계처럼 「무시청이면 닫는」 원본이 키프레임 갈래만 볼 때 닫히지 않게.
+        if (auto rtsp = dynamic_pointer_cast<RtspMediaSource>(origin)) {
+            _origin_reader = rtsp->getRing()->attach(_poller, false);
+        }
         _idle.resetTime();
         _timer = make_shared<Timer>(kCheckSeconds, [weak_self]() {
             auto self = weak_self.lock();
@@ -139,6 +144,7 @@ private:
     MultiMediaSourceMuxer::Ptr _muxer;
     Track::Ptr _video;
     FrameWriterInterface *_delegate = nullptr;
+    RtspMediaSource::RingType::RingReader::Ptr _origin_reader; // 원본 시청자 1 유지(내용은 쓰지 않는다)
     Timer::Ptr _timer;
     Ticker _idle;
     uint64_t _keyframes = 0;
@@ -153,6 +159,7 @@ void KeyframeRelay::stop() {
     }
     _delegate = nullptr;
     _video = nullptr;
+    _origin_reader = nullptr;
     _muxer = nullptr; // 등록 해제
     _timer = nullptr;
     lock_guard<mutex> lck(g_mtx);
