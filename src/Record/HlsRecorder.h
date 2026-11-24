@@ -30,6 +30,7 @@ public:
 
         _option = option;
         _hls = std::make_shared<HlsMakerImp>(is_fmp4, m3u8_file, params, hlsBufSize, hlsDuration, hlsNum, hlsKeep, hlsFmp4SegExt);
+        _hls->setProgramDateBase(option.pdt_base_ms);
         // 清空上次的残余文件  [AUTO-TRANSLATED:e16122be]
         // Clear the residual files from the last time
         _hls->clearCache();
@@ -67,6 +68,12 @@ public:
             _hls->getMediaSource()->setIndexFile("");
         }
         if (_enabled || !_option.hls_demand) {
+            // 녹화 시각 표기(EdgeFlowAI): 키프레임마다 출력·원본 시간표 짝을 남긴다. 원본은 modify_stamp 로 감싼 FrameStamp 만 가진다.
+            if (_option.pdt_base_ms && frame->getTrackType() == TrackVideo && frame->keyFrame()) {
+                // 시간표 보정이 꺼져 있으면(FrameStamp 아님) 출력 시간표가 곧 원본이다.
+                auto stamped = dynamic_cast<FrameStamp *>(frame.get());
+                _hls->noteOriginStamp(frame->dts(), stamped ? stamped->originDts() : frame->dts());
+            }
             return Muxer::inputFrame(frame);
         }
         return false;

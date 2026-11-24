@@ -287,6 +287,11 @@ public:
     // Maximum number of tracks
     size_t max_track = 2;
 
+    // 녹화 시각 표기(EdgeFlowAI, 2026-11-24): 0 이 아니면 이 스트림의 HLS 재생목록 각 조각 앞에 #EXT-X-PROGRAM-DATE-TIME 을 넣는다.
+    // 값은 첫 키프레임의 녹화 시각(UTC epoch ms)이고, 이후 조각은 원본(수정 전) 시간표 증가분을 더한다. 외부 녹화기 배속 재생은
+    // modify_stamp 가 시간표를 수신 시각으로 바꿔 재생기 시간축이 1배로 흐르므로(4배 요청 → 원본 약 3.2배), 웹이 화면 시각을 이 값으로 잡는다.
+    uint64_t pdt_base_ms = 0;
+
 #define OPT_VALUE(XX)           \
         XX(modify_stamp)        \
         XX(enable_audio)        \
@@ -315,7 +320,7 @@ public:
                                 \
         XX(hls_save_path)       \
         XX(stream_replace)      \
-        XX(max_track)
+        XX(max_track)                   XX(pdt_base_ms)
 
     template <typename MAP>
     ProtocolOption(const MAP &allArgs) : ProtocolOption() {

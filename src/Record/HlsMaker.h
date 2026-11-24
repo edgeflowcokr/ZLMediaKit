@@ -52,6 +52,13 @@ public:
     void inputData(const char *data, size_t len, uint64_t timestamp, bool is_idr_fast_packet);
 
     /**
+     * 녹화 시각 표기(EdgeFlowAI): base_ms(UTC epoch ms) 가 0 이 아니면 조각마다 #EXT-X-PROGRAM-DATE-TIME 을 쓴다.
+     * noteOriginStamp 는 키프레임마다 (출력 시간표, 원본 시간표) 짝을 알려 준다 — 조각 시작의 녹화 시각 = base + (원본 - 첫 원본).
+     */
+    void setProgramDateBase(uint64_t base_ms) { _pdt_base_ms = base_ms; }
+    void noteOriginStamp(uint64_t stamp, uint64_t origin);
+
+    /**
      * 输入fmp4 init segment
      * @param data 数据
      * @param len 数据长度
@@ -209,6 +216,15 @@ private:
     uint64_t _file_index = 0;
     std::string _last_file_name;
     std::deque<std::tuple<int,std::string> > _seg_dur_list;
+
+    // 녹화 시각 표기(EdgeFlowAI). _seg_pdt_list 는 _seg_dur_list 와 같은 순서·길이(-1 = 표기 없음).
+    int64_t programDateFor(uint64_t stamp) const;
+    uint64_t _pdt_base_ms = 0;
+    bool _pdt_has_first = false;
+    uint64_t _pdt_first_origin = 0;
+    std::deque<std::pair<uint64_t, uint64_t>> _pdt_anchors; // (출력 시간표, 원본 시간표), 최근 16개
+    int64_t _last_seg_pdt = -1;
+    std::deque<int64_t> _seg_pdt_list;
 };
 
 }//namespace mediakit

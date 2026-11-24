@@ -8,6 +8,8 @@
  * may be found in the AUTHORS file in the root of the source tree.
  */
 
+#include <cstdio>
+#include <ctime>
 #include <iomanip>
 #include "HlsMaker.h"
 #include "Common/config.h"
@@ -23,6 +25,56 @@ HlsMaker::HlsMaker(bool is_fmp4, float seg_duration, uint32_t seg_number, bool s
     _seg_number = seg_number;
     _seg_duration = seg_duration;
     _seg_keep = seg_keep;
+}
+
+// UTC epoch ms -> ISO 8601(밀리초, Z). HLS EXT-X-PROGRAM-DATE-TIME 형식(EdgeFlowAI).
+static std::string formatProgramDate(int64_t ms) {
+    time_t sec = (time_t)(ms / 1000);
+    struct tm t {};
+#if defined(_WIN32)
+    gmtime_s(&t, &sec);
+#else
+    gmtime_r(&sec, &t);
+#endif
+    char buf[40];
+    snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min,
+             t.tm_sec, (int)(ms % 1000));
+    return buf;
+}
+
+void HlsMaker::noteOriginStamp(uint64_t stamp, uint64_t origin) {
+    if (!_pdt_base_ms) {
+        return;
+    }
+    if (!_pdt_has_first) {
+        _pdt_has_first = true;
+        _pdt_first_origin = origin;
+    }
+    _pdt_anchors.emplace_back(stamp, origin);
+    while (_pdt_anchors.size() > 16) {
+        _pdt_anchors.pop_front();
+    }
+}
+
+int64_t HlsMaker::programDateFor(uint64_t stamp) const {
+    if (!_pdt_base_ms || _pdt_anchors.empty()) {
+        return -1;
+    }
+    // 이 조각 키프레임의 짝(없으면 그 직전 짝)에서 원본 시간표를 구한다. 출력 시간표 차이는 짝 사이 보간(대개 0).
+    auto anchor = _pdt_anchors.front();
+    for (auto it = _pdt_anchors.rbegin(); it != _pdt_anchors.rend(); ++it) {
+        if (it->first <= stamp) {
+            anchor = *it;
+            break;
+        }
+    }
+    int64_t origin = (int64_t)anchor.second + ((int64_t)stamp - (int64_t)anchor.first);
+    int64_t offset = origin - (int64_t)_pdt_first_origin;
+    if (offset < 0) {
+        // 원본 시간표가 되감기면(녹화기 재시작 등) 틀린 시각을 쓰지 않고 표기를 뺀다.
+        return -1;
+    }
+    return (int64_t)_pdt_base_ms + offset;
 }
 
 void HlsMaker::makeIndexFile(bool include_delay, bool eof) {
@@ -76,7 +128,15 @@ void HlsMaker::makeIndexFile(bool include_delay, bool eof) {
     }
 
     stringstream ss;
+    // _seg_pdt_list 는 _seg_dur_list 와 길이가 같고, temp 는 그 뒤쪽 부분이다(EdgeFlowAI 녹화 시각 표기).
+    size_t pdt_index = _seg_pdt_list.size() >= temp.size() ? _seg_pdt_list.size() - temp.size() : _seg_pdt_list.size();
     for (auto &tp : temp) {
+        if (pdt_index < _seg_pdt_list.size()) {
+            auto pdt = _seg_pdt_list[pdt_index++];
+            if (pdt >= 0) {
+                ss << "#EXT-X-PROGRAM-DATE-TIME:" << formatProgramDate(pdt) << "\n";
+            }
+        }
         ss << "#EXTINF:" << std::setprecision(3) << std::get<0>(tp) / 1000.0 << ",\n" << std::get<1>(tp) << "\n";
     }
     index_str += ss.str();
@@ -131,6 +191,9 @@ void HlsMaker::delOldSegment() {
     // In the hls m3u8 index file, the number of slices we save is consistent with the _seg_number setting
     if (_file_index > _seg_number + segDelay) {
         _seg_dur_list.pop_front();
+        if (!_seg_pdt_list.empty()) {
+            _seg_pdt_list.pop_front();
+        }
     }
     GET_CONFIG(uint32_t, segRetain, Hls::kSegmentRetain);
     // 但是实际保存的切片个数比m3u8所述多若干个,这样做的目的是防止播放器在切片删除前能下载完毕  [AUTO-TRANSLATED:1688f857]
@@ -156,6 +219,7 @@ void HlsMaker::addNewSegment(uint64_t stamp) {
     // 记录本次切片的起始时间戳  [AUTO-TRANSLATED:8eb776e9]
     // Record the starting timestamp of this slice
     _last_seg_timestamp = _last_timestamp ? _last_timestamp : stamp;
+    _last_seg_pdt = programDateFor(stamp);
 }
 
 void HlsMaker::flushLastSegment(bool eof){
@@ -172,6 +236,7 @@ void HlsMaker::flushLastSegment(bool eof){
         seg_dur = 100;
     }
     _seg_dur_list.emplace_back(seg_dur, std::move(_last_file_name));
+    _seg_pdt_list.emplace_back(_last_seg_pdt);
     delOldSegment();
     // 先flush ts切片，否则可能存在ts文件未写入完毕就被访问的情况  [AUTO-TRANSLATED:f8d6dc87]
     // Flush the ts slice first, otherwise there may be a situation where the ts file is not written completely before it is accessed
@@ -203,6 +268,8 @@ void HlsMaker::clear() {
     _last_timestamp = 0;
     _last_seg_timestamp = 0;
     _seg_dur_list.clear();
+    _seg_pdt_list.clear();
+    _last_seg_pdt = -1;
     _last_file_name.clear();
 }
 

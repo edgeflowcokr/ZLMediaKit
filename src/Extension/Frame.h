@@ -553,6 +553,8 @@ public:
     size_t size() const override { return _frame->size(); }
     CodecId getCodecId() const override { return _frame->getCodecId(); }
     void setStamp(int64_t dts, int64_t pts);
+    // 수정 전(원본) 시간표 — HLS 녹화 시각 표기가 원본 증가분을 쓴다(EdgeFlowAI).
+    uint64_t originDts() const { return _frame->dts(); }
 
 private:
     int64_t _dts;
