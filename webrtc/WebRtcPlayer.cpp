@@ -348,13 +348,13 @@ void WebRtcPlayer::sendBatch(std::vector<RtpPacket::Ptr> &&out) {
     std::vector<uint64_t> delay_ms(out.size());
     {
         std::lock_guard<std::mutex> lck(g_pace_mtx);
-        auto viewer_next = std::max(_pace_next_us, now);
+        auto viewer_next = (std::max)(_pace_next_us, now);
         for (size_t i = 0; i < out.size(); ++i) {
             const double bits = (double)out[i]->size() * 8.0;
             // 서버 전체: 누수 버킷(속도 상한만큼 시각표가 전진, 시청자별 시각표와 독립). 밀린 양은 max_delay 로 제한한다.
-            auto global_at = std::max(g_pace_next_us, now);
-            g_pace_next_us = std::min(global_at + (uint64_t)(bits / total_mbps), now + max_delay_us);
-            auto at = std::max(viewer_next, global_at);
+            auto global_at = (std::max)(g_pace_next_us, now);
+            g_pace_next_us = (std::min)(global_at + (uint64_t)(bits / total_mbps), now + max_delay_us);
+            auto at = (std::max)(viewer_next, global_at);
             if (at - now > max_delay_us) {
                 at = now + max_delay_us;
             }
