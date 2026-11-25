@@ -82,6 +82,12 @@ public:
         return _option.rtsp_demand ? (_clear_cache ? true : _enabled) : true;
     }
 
+    // EdgeFlowAI: 인코더가 쥔 마지막 접근 단위와 합쳐 쓰기 대기 RTP 를 링으로 즉시 내보낸다(~key 갈래 전용).
+    void flushRtp() {
+        RtspMuxer::flush();
+        _media_src->flushRtp();
+    }
+
     MediaSource::Ptr getMediaSource() const {
         return _media_src;
     }

@@ -826,6 +826,12 @@ MultiMediaSourceMuxer::RingType::RingReader::Ptr MultiMediaSourceMuxer::getFrame
     return _ring->attach(poller);
 }
 
+void MultiMediaSourceMuxer::flushRtsp() {
+    if (_rtsp) {
+        _rtsp->flushRtp();
+    }
+}
+
 EventPoller::Ptr MultiMediaSourceMuxer::getOwnerPoller(MediaSource &sender) {
     auto listener = getDelegate();
     if (!listener) {

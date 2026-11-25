@@ -131,6 +131,11 @@ public:
      */
     void onWrite(RtpPacket::Ptr rtp, bool keyPos) override;
 
+    // EdgeFlowAI: 합쳐 쓰기 대기 중인 RTP 를 링으로 즉시 내보낸다(키프레임 갈래 ~key 시청 시작용 — 마지막 키프레임이 한 프레임 뒤까지 안 묶이게).
+    void flushRtp() {
+        flush();
+    }
+
     void clearCache() override{
         PacketCache<RtpPacket>::clearCache();
         _ring->clearCache();

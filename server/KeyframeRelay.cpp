@@ -28,6 +28,7 @@ namespace {
 const string kKeySuffix = "~key";
 constexpr float kCheckSeconds = 2.0f;        // 상태 점검 주기
 constexpr uint64_t kIdleCloseMS = 15 * 1000; // 시청자 0 이 이만큼 이어지면 닫는다(첫 시청자 대기 포함)
+constexpr uint64_t kFlushDelayMS = 15;       // 키프레임 입력 뒤 RTP 를 내보내기까지(같은 접근 단위의 조각을 기다리는 틈)
 constexpr size_t kMaxRelays = 512;           // 동시 갈래 상한(채널 수 상한보다 넉넉히)
 
 class KeyframeRelay : public MediaSourceEvent, public enable_shared_from_this<KeyframeRelay> {
@@ -79,9 +80,19 @@ public:
             if (!frame->keyFrame() && !frame->configFrame()) {
                 return true; // P·B 프레임은 버린다.
             }
+            if (self->_have_injected && frame->dts() <= self->_injected_dts) {
+                return true; // 시작 때 되돌려 넣은 키프레임과 같은(또는 이전) 프레임은 다시 넣지 않는다.
+            }
             ++self->_keyframes;
-            return self->_muxer->inputFrame(frame);
+            auto ret = self->_muxer->inputFrame(frame);
+            if (frame->keyFrame()) {
+                self->scheduleFlush();
+            }
+            return ret;
         });
+        // 원본 프레임 링(GOP 캐시)에 있는 마지막 설정+키프레임을 지금 넣는다 — 안 그러면 갈래가 원본의 다음 키프레임(1 GOP)과
+        // 그 다음 프레임(RTP 인코더가 한 접근 단위를 쥐고 있음)이 올 때까지 등록되지 않는다.
+        injectLastKeyframe(origin);
         // 원본 RTSP 링에 시청자로 붙는다 — 녹화기·짝 서버 중계처럼 「무시청이면 닫는」 원본이 키프레임 갈래만 볼 때 닫히지 않게.
         if (auto rtsp = dynamic_pointer_cast<RtspMediaSource>(origin)) {
             _origin_reader = rtsp->getRing()->attach(_poller, false);
@@ -93,6 +104,76 @@ public:
         }, _poller);
         InfoL << "키프레임 갈래 시작: " << _tuple.shortUrl();
         return true;
+    }
+
+    // 키프레임 뒤 짧게 기다렸다가(같은 접근 단위의 다른 조각이 붙을 틈) RTSP 출력의 대기 RTP 를 링으로 내보낸다.
+    // ~key 는 프레임이 초당 1장이라, RTP 인코더·합쳐 쓰기가 「다음 프레임이 와야 내보내는」 한 프레임 지연이 곧 1 GOP 지연이 된다.
+    void scheduleFlush() {
+        if (_flush_pending) {
+            return;
+        }
+        _flush_pending = true;
+        weak_ptr<KeyframeRelay> weak_self = shared_from_this();
+        _poller->doDelayTask(kFlushDelayMS, [weak_self]() {
+            if (auto self = weak_self.lock()) {
+                self->_flush_pending = false;
+                if (self->_muxer) {
+                    self->_muxer->flushRtsp();
+                }
+            }
+            return 0;
+        });
+    }
+
+    // 원본 먹서의 프레임 링(GOP 캐시)에서 마지막 설정 프레임들+키프레임을 꺼내 ~key 먹서에 넣는다. 원본 poller 에서 호출.
+    void injectLastKeyframe(const MediaSource::Ptr &origin) {
+        vector<Frame::Ptr> kept; // 설정·키프레임만(시간순)
+        try {
+            auto muxer = origin->getMuxer();
+            auto reader = muxer ? muxer->getFrameReader() : nullptr;
+            if (!reader) {
+                return;
+            }
+            reader->setReadCB([&kept](const Frame::Ptr &frame) {
+                if (frame->getTrackType() == TrackVideo && (frame->keyFrame() || frame->configFrame())) {
+                    kept.emplace_back(frame);
+                }
+            });
+            reader->setReadCB(nullptr); // 캐시 재생은 위 setReadCB 에서 동기로 끝났다. 시청자로 남지 않는다.
+        } catch (std::exception &ex) {
+            DebugL << "키프레임 갈래: 원본 GOP 캐시를 읽지 못했습니다(다음 키프레임을 기다립니다): " << ex.what();
+            return;
+        }
+        // 뒤에서부터: 마지막 키프레임(같은 dts 의 조각 포함) + 그 앞에 붙은 설정 프레임.
+        ssize_t last = static_cast<ssize_t>(kept.size()) - 1;
+        while (last >= 0 && !kept[last]->keyFrame()) {
+            --last;
+        }
+        if (last < 0) {
+            return;
+        }
+        auto key_dts = kept[last]->dts();
+        ssize_t first = last;
+        while (first > 0) {
+            auto &prev = kept[first - 1];
+            if (prev->configFrame() || (prev->keyFrame() && prev->dts() == key_dts)) {
+                --first;
+            } else {
+                break;
+            }
+        }
+        // 설정 프레임이 같은 dts 의 키프레임 조각 사이에 있어도 순서를 그대로 넣는다.
+        size_t n = 0;
+        for (ssize_t i = first; i <= last; ++i) {
+            if (_muxer->inputFrame(kept[i])) {
+                ++n;
+            }
+        }
+        _have_injected = true;
+        _injected_dts = key_dts;
+        _keyframes += n;
+        scheduleFlush();
+        InfoL << "키프레임 갈래: 원본 GOP 캐시의 마지막 키프레임을 즉시 넣었습니다: " << _tuple.shortUrl() << " 프레임=" << n;
     }
 
     // poller 에서 호출. 계속 점검하면 true.
@@ -148,6 +229,9 @@ private:
     Timer::Ptr _timer;
     Ticker _idle;
     uint64_t _keyframes = 0;
+    bool _have_injected = false;   // 시작 때 원본 GOP 캐시의 키프레임을 넣었는가
+    uint64_t _injected_dts = 0;    // 그 키프레임의 dts(같거나 이전 프레임은 다시 넣지 않는다)
+    bool _flush_pending = false;
 };
 
 mutex g_mtx;

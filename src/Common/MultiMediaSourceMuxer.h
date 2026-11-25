@@ -215,6 +215,9 @@ public:
     // 获取frame ring reader
     RingType::RingReader::Ptr getFrameReader();
 
+    // EdgeFlowAI: RTSP 출력의 대기 RTP 를 즉시 내보낸다(키프레임 갈래 ~key 전용 — 프레임이 드물게 오므로 한 프레임 지연이 곧 1 GOP 지연).
+    void flushRtsp();
+
     const ProtocolOption &getOption() const;
     const MediaTuple &getMediaTuple() const;
     std::string shortUrl() const;
