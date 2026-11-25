@@ -1769,9 +1769,22 @@ void play_plugin(SocketHelper &sender, const WebRtcArgs &args, const onCreateWeb
             // 还原成rtc，目的是为了hook时识别哪种播放协议  [AUTO-TRANSLATED:fe8dd2dc]
             // Restore to RTC, the purpose is to identify which playback protocol during hooking
             info.schema = "rtc";
-            auto rtc = Type::create(EventPollerPool::Instance().getPoller(), src, info,
-                WebRtcTransport::Role::PEER, WebRtcTransport::SignalingProtocols::WHEP_WHIP);
-            cb(*rtc);
+            // EdgeFlow: 기본(prefer current thread)은 요청을 받은 HTTP 스레드·미디어 소스 스레드에 세션이 몰려, 64칸 동시 접속이
+            //   한 poller 에서 DTLS·SRTP·송신을 직렬로 처리했다. rtc.balancePoller=1 이면 가장 한가한 poller 에 만들고,
+            //   SDP 답변(getAnswerSdp)과 hook 은 그 poller 에서 실행한다(설정 0 이면 기존 동작).
+            auto balance = mINI::Instance()[Rtc::kBalancePoller].as<bool>();
+            auto poller = EventPollerPool::Instance().getPoller(!balance);
+            auto create = [cb, src, info, poller]() mutable {
+                auto rtc = Type::create(poller, src, info,
+                    WebRtcTransport::Role::PEER, WebRtcTransport::SignalingProtocols::WHEP_WHIP);
+                InfoL << "whep session poller: " << poller->getThreadName() << " stream=" << info.shortUrl();
+                cb(*rtc);
+            };
+            if (poller->isCurrentThread()) {
+                create();
+            } else {
+                poller->async(std::move(create), false);
+            }
         });
     };
 

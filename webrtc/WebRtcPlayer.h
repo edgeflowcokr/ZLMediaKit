@@ -122,6 +122,11 @@ private:
     bool _first_packet; // 是否是第一个包的标记
 };
 
+namespace Rtc {
+// EdgeFlow: 새 시청자 초기 키프레임 송신 페이싱·세션 poller 분산 설정(WebRtcPlayer.cpp 정의)
+extern const std::string kBalancePoller;
+}
+
 class WebRtcPlayer : public WebRtcTransportImp {
 public:
     using Ptr = std::shared_ptr<WebRtcPlayer>;
@@ -151,6 +156,8 @@ private:
     void attachReader(const RtspMediaSource::Ptr &playSrc);
     // EdgeFlow: 교체 뒤 새 소스의 RTP seq·timestamp 를 이전 스트림에 이어 붙인다(필요할 때만 복사본을 만든다)
     RtpPacket::Ptr rewriteForContinuity(const RtpPacket::Ptr &rtp);
+    // EdgeFlow: 한 묶음(보통 한 프레임)의 RTP 를 보낸다. 페이싱 대상이면 시청자별·서버 전체 속도 상한에 맞춰 시간차를 둔다.
+    void sendBatch(std::vector<RtpPacket::Ptr> &&out);
 
 private:
     // 媒体相关元数据  [AUTO-TRANSLATED:f4cf8045]
@@ -170,6 +177,8 @@ private:
 
     bool _is_h264 { false };
     bool _bfliter_flag { false };
+    bool _pace_enabled { false };      // 이 시청자의 소스가 페이싱 대상인가(rtc.paceSuffix)
+    uint64_t _pace_next_us { 0 };      // 이 시청자가 다음에 보낼 수 있는 시각(steady_clock µs)
     std::shared_ptr<H264BFrameFilter> _bfilter;
 
     // EdgeFlow: 트랙 타입별(0=video,1=audio) 송출 연속성 상태

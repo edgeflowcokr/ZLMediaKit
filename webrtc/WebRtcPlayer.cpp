@@ -14,6 +14,10 @@
 #include "Extension/Factory.h"
 #include "Util/base64.h"
 
+#include <algorithm>
+#include <chrono>
+#include <mutex>
+
 using namespace std;
 using namespace toolkit;
 
@@ -22,8 +26,38 @@ namespace mediakit {
 namespace Rtc {
 #define RTC_FIELD "rtc."
 const string kBfilter = RTC_FIELD "bfilter";
-static onceToken token([]() { mINI::Instance()[kBfilter] = 0; });
+// EdgeFlow: 동시 시청자의 초기 키프레임이 한꺼번에 나가 손실·NACK 이 나는 것을 막는 송신 페이싱(0.50 64칸 실측: 키프레임 전 손실 7천 패킷).
+//   키프레임 1장(8Mbps 원천 약 215패킷·250KB)을 시청자별 상한(paceViewerMbps)과 서버 전체 상한(paceTotalMbps)에 맞춰 시간차로 보낸다.
+//   paceViewerMbps 또는 paceTotalMbps 가 0 이면 끈다. paceSuffix 가 비어 있으면 모든 스트림, 아니면 그 접미사 스트림(기본 ~key)만.
+const string kPaceViewerMbps = RTC_FIELD "paceViewerMbps";
+const string kPaceTotalMbps = RTC_FIELD "paceTotalMbps";
+const string kPaceSuffix = RTC_FIELD "paceSuffix";
+const string kPaceMinPackets = RTC_FIELD "paceMinPackets";
+const string kPaceMaxDelayMs = RTC_FIELD "paceMaxDelayMs";
+// 새 WHEP 세션을 요청 처리 스레드가 아니라 가장 한가한 poller 에 만든다(0 이면 기존처럼 현재 스레드 우선).
+const string kBalancePoller = RTC_FIELD "balancePoller";
+static onceToken token([]() {
+    mINI::Instance()[kBfilter] = 0;
+    mINI::Instance()[kPaceViewerMbps] = 40;
+    // 0.50 64칸 웹 실측(2026-11-25): 400Mbps 손실 15,882·첫 키프레임 3.28초, 200Mbps 손실 2,441·1.99초, 150Mbps 3,466·2.34초 → 200.
+    //   남는 손실은 브라우저 하나가 연결 64개를 동시에 받는 수신 쪽 한계로 본다(16칸은 0.80초·손실 0).
+    mINI::Instance()[kPaceTotalMbps] = 200;
+    mINI::Instance()[kPaceSuffix] = "~key";
+    mINI::Instance()[kPaceMinPackets] = 16;
+    mINI::Instance()[kPaceMaxDelayMs] = 600;
+    mINI::Instance()[kBalancePoller] = 1;
+});
 } // namespace Rtc
+
+namespace {
+uint64_t steadyNowUs() {
+    return (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+// 서버 전체 송신 시각표(모든 시청자 공유): 다음에 보낼 수 있는 시각.
+std::mutex g_pace_mtx;
+uint64_t g_pace_next_us = 0;
+} // namespace
 
 H264BFrameFilter::H264BFrameFilter()
     : _last_seq(0)
@@ -220,6 +254,15 @@ void WebRtcPlayer::attachReader(const RtspMediaSource::Ptr &playSrc) {
             _codec_by_type[type] = track->getCodecName();
         }
     }
+    {
+        GET_CONFIG(float, viewer_mbps, Rtc::kPaceViewerMbps);
+        GET_CONFIG(float, total_mbps, Rtc::kPaceTotalMbps);
+        GET_CONFIG(string, suffix, Rtc::kPaceSuffix);
+        const auto &stream = playSrc->getMediaTuple().stream;
+        _pace_enabled = viewer_mbps > 0 && total_mbps > 0
+            && (suffix.empty() || (stream.size() >= suffix.size() && stream.compare(stream.size() - suffix.size(), suffix.size(), suffix) == 0));
+        _pace_next_us = 0;
+    }
     if (canSendRtp()) {
         playSrc->pause(false);
         _reader = playSrc->getRing()->attach(getPoller(), true);
@@ -242,21 +285,19 @@ void WebRtcPlayer::attachReader(const RtspMediaSource::Ptr &playSrc) {
                 strong_self->_send_config_frames_once = false;
             }
 
-            size_t i = 0;
+            std::vector<RtpPacket::Ptr> out;
+            out.reserve(pkt->size());
             pkt->for_each([&](const RtpPacket::Ptr &rtp) {
-                if (strong_self->_bfliter_flag) {
-                    if (TrackVideo == rtp->type && strong_self->_is_h264) {
-                        auto rtp_filter = strong_self->_bfilter->processPacket(rtp);
-                        if (rtp_filter) {
-                            strong_self->onSendRtp(strong_self->rewriteForContinuity(rtp_filter), ++i == pkt->size());
-                        }
-                    } else {
-                        strong_self->onSendRtp(strong_self->rewriteForContinuity(rtp), ++i == pkt->size());
+                if (strong_self->_bfliter_flag && TrackVideo == rtp->type && strong_self->_is_h264) {
+                    auto rtp_filter = strong_self->_bfilter->processPacket(rtp);
+                    if (rtp_filter) {
+                        out.emplace_back(strong_self->rewriteForContinuity(rtp_filter));
                     }
                 } else {
-                    strong_self->onSendRtp(strong_self->rewriteForContinuity(rtp), ++i == pkt->size());
+                    out.emplace_back(strong_self->rewriteForContinuity(rtp));
                 }
             });
+            strong_self->sendBatch(std::move(out));
         });
         _reader->setDetachCB([weak_self]() {
             auto strong_self = weak_self.lock();
@@ -282,6 +323,71 @@ void WebRtcPlayer::attachReader(const RtspMediaSource::Ptr &playSrc) {
                 WarnL << "Send unknown message type to webrtc player: " << data.type_name();
             }
         });
+    }
+}
+
+void WebRtcPlayer::sendBatch(std::vector<RtpPacket::Ptr> &&out) {
+    if (out.empty()) {
+        return;
+    }
+    const uint64_t now = steadyNowUs();
+    GET_CONFIG(uint32_t, min_packets, Rtc::kPaceMinPackets);
+    // 큰 묶음(키프레임)이거나, 앞서 페이싱한 패킷이 아직 나가는 중이면(순서 유지) 페이싱한다.
+    if (!_pace_enabled || (out.size() < min_packets && _pace_next_us <= now)) {
+        for (size_t i = 0; i < out.size(); ++i) {
+            onSendRtp(out[i], i + 1 == out.size());
+        }
+        return;
+    }
+    GET_CONFIG(float, viewer_mbps, Rtc::kPaceViewerMbps);
+    GET_CONFIG(float, total_mbps, Rtc::kPaceTotalMbps);
+    GET_CONFIG(uint32_t, max_delay_ms, Rtc::kPaceMaxDelayMs);
+    const uint64_t max_delay_us = (uint64_t)max_delay_ms * 1000;
+
+    // 패킷별 송신 시각을 정한다(시청자별·서버 전체 시각표 중 늦은 쪽). 1 Mbit/s = 1 bit/µs.
+    std::vector<uint64_t> delay_ms(out.size());
+    {
+        std::lock_guard<std::mutex> lck(g_pace_mtx);
+        auto viewer_next = std::max(_pace_next_us, now);
+        for (size_t i = 0; i < out.size(); ++i) {
+            const double bits = (double)out[i]->size() * 8.0;
+            // 서버 전체: 누수 버킷(속도 상한만큼 시각표가 전진, 시청자별 시각표와 독립). 밀린 양은 max_delay 로 제한한다.
+            auto global_at = std::max(g_pace_next_us, now);
+            g_pace_next_us = std::min(global_at + (uint64_t)(bits / total_mbps), now + max_delay_us);
+            auto at = std::max(viewer_next, global_at);
+            if (at - now > max_delay_us) {
+                at = now + max_delay_us;
+            }
+            viewer_next = at + (uint64_t)(bits / viewer_mbps);
+            delay_ms[i] = (at - now) / 1000;
+        }
+        _pace_next_us = viewer_next;
+    }
+
+    // 같은 지연(ms)의 패킷을 한 작업으로 묶는다(시각이 단조 증가하므로 순서가 유지된다).
+    weak_ptr<WebRtcPlayer> weak_self = static_pointer_cast<WebRtcPlayer>(shared_from_this());
+    size_t begin = 0;
+    while (begin < out.size()) {
+        size_t end = begin + 1;
+        while (end < out.size() && delay_ms[end] == delay_ms[begin]) {
+            ++end;
+        }
+        auto group = std::make_shared<std::vector<RtpPacket::Ptr>>(std::make_move_iterator(out.begin() + begin), std::make_move_iterator(out.begin() + end));
+        if (delay_ms[begin] == 0) {
+            for (size_t i = 0; i < group->size(); ++i) {
+                onSendRtp((*group)[i], i + 1 == group->size());
+            }
+        } else {
+            getPoller()->doDelayTask(delay_ms[begin], [weak_self, group]() {
+                if (auto self = weak_self.lock()) {
+                    for (size_t i = 0; i < group->size(); ++i) {
+                        self->onSendRtp((*group)[i], i + 1 == group->size());
+                    }
+                }
+                return (uint64_t)0;
+            });
+        }
+        begin = end;
     }
 }
 
