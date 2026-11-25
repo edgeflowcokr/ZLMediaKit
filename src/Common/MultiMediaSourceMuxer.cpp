@@ -968,6 +968,13 @@ void MultiMediaSourceMuxer::createGopCacheIfNeed() {
     // 실제 보관 시간 = min(이 프레임 상한, gop_cache 개수만큼의 GOP). pre-event N초 확보하려면 둘 다 키워야 함(config.ini 참고).
     GET_CONFIG(size_t, event_pre_buffer_frames, Record::kEventPreBufferFrames);
     auto ring_max_size = std::max<size_t>(event_pre_buffer_frames, 1);
+    auto ring_max_gop = std::max<size_t>(gop_cache, 1);
+    if (end_with(_tuple.stream, "~key")) {
+        // EdgeFlowAI: 키프레임만 라이브 갈래(KeyframeRelay)는 이벤트 클립을 만들지 않고 시청 시작용 마지막 GOP 하나면 된다.
+        //   운영 gop_cache(60)·프리버퍼(8192 프레임)를 그대로 쓰면 채널마다 키프레임 60장(수십 MB)을 쥐고 있다.
+        ring_max_size = std::min<size_t>(ring_max_size, 64);
+        ring_max_gop = 1;
+    }
     weak_ptr<MultiMediaSourceMuxer> weak_self = shared_from_this();
     auto src = std::make_shared<MediaSourceForMuxer>(weak_self.lock());
     _ring = std::make_shared<RingType>(ring_max_size, [weak_self, src](int size) {
@@ -978,7 +985,7 @@ void MultiMediaSourceMuxer::createGopCacheIfNeed() {
                 strong_self->onReaderChanged(*src, strong_self->totalReaderCount());
             });
         }
-    }, std::max<size_t>(gop_cache, 1));
+    }, ring_max_gop);
 }
 
 void MultiMediaSourceMuxer::resetTracks() {
@@ -1108,10 +1115,16 @@ bool MultiMediaSourceMuxer::onTrackFrame_l(const Frame::Ptr &frame_in) {
         if (frame->getTrackType() == TrackVideo) {
             // 视频时，遇到第一帧配置帧或关键帧则标记为gop开始处  [AUTO-TRANSLATED:66247aa8]
             // When it is a video, if the first frame configuration frame or key frame is encountered, it is marked as the beginning of the GOP
+            // EdgeFlowAI: 키·설정 프레임이 비-키 프레임 뒤에 오면(원래 규칙) 또는 설정 프레임이 키프레임 뒤에 다시 오면 새 GOP 시작이다.
+            //   원래 규칙만으로는 키프레임만 흐르는 스트림(~key 갈래: SPS PPS IDR SPS PPS IDR ...)에서 비-키 프레임이 없어 GOP 시작이
+            //   영영 안 났고, 프리버퍼 링이 eventPreBufferFrames(8192)까지 프레임을 쌓았다(갈래당 ~GB 누수, 0.50 64채널 2026-11-25).
+            //   여러 조각(slice) IDR(IDR IDR P ...)은 두 번째 조각이 설정 프레임이 아니므로 원래처럼 같은 GOP 로 남는다.
             auto video_key_pos = frame->keyFrame() || frame->configFrame();
-            _ring->write(frame, video_key_pos && !_video_key_pos);
+            auto gop_start = video_key_pos && (!_video_key_pos || (frame->configFrame() && !_video_last_config));
+            _ring->write(frame, gop_start);
             if (!frame->dropAble()) {
                 _video_key_pos = video_key_pos;
+                _video_last_config = frame->configFrame();
             }
         } else {
             // 没有视频时，设置is_key为true，目的是关闭gop缓存  [AUTO-TRANSLATED:f3223755]

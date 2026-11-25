@@ -267,7 +267,8 @@ private:
 private:
     bool _is_enable = false;
     bool _create_in_poller = false;
-    bool _video_key_pos = false;
+    bool _video_key_pos = false;     // 직전 비-드롭 영상 프레임이 키·설정 프레임이었는지(GOP 시작 판정)
+    bool _video_last_config = false; // 직전 비-드롭 영상 프레임이 설정 프레임이었는지(GOP 시작 판정)
     float _dur_sec;
     std::function<void(const Frame::Ptr &frame)> _on_frame;
     std::shared_ptr<class FramePacedSender> _paced_sender;
