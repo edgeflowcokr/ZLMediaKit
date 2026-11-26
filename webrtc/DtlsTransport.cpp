@@ -649,6 +649,25 @@ namespace RTC
         MS_DUMP("</DtlsTransport>");
     }
 
+    // EdgeFlowAI(2026-11-27, 결함 1017): 서버가 세션을 닫을 때(원본 소실·API 삭제 등) 브라우저가 바로 알게 close_notify 를 보낸다.
+    // 원래는 소멸자에서만 보냈는데, 그때는 WebRtcTransport::onShutdown 이 ICE 쌍 소켓을 이미 닫아 알림이 버려졌다
+    // (IceTransport sendSocketData 「pair should not be nullptr」). 보낸 뒤 CLOSED 로 두어 소멸자가 다시 보내지 않는다.
+    // 상대가 먼저 close_notify 를 보냈으면(이미 CLOSED) 아무것도 하지 않는다.
+    void DtlsTransport::Close()
+    {
+        MS_TRACE();
+
+        if (this->state != DtlsState::CONNECTED || !this->ssl)
+            return;
+
+        // SSL_shutdown 은 close_notify 를 쓰기 BIO 에 넣는다. 상대 응답은 기다리지 않는다(단방향 종료).
+        SSL_shutdown(this->ssl);
+        SendPendingOutgoingDtlsData();
+
+        this->timer = nullptr;
+        this->state = DtlsState::CLOSED;
+    }
+
     void DtlsTransport::Run(Role localRole)
     {
         DebugL << ((localRole == RTC::DtlsTransport::Role::SERVER)? "Server" : "Client");

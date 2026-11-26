@@ -181,6 +181,8 @@ namespace RTC
     public:
         void Dump() const;
         void Run(Role localRole);
+        // EdgeFlowAI: 세션을 닫기 전에 상대에게 DTLS close_notify 를 보낸다(연결된 경우만, 한 번).
+        void Close();
         std::vector<Fingerprint>& GetLocalFingerprints() const
         {
             return env->localFingerprints;

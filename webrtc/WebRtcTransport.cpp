@@ -618,6 +618,12 @@ void WebRtcTransport::onShutdown(const SockException &ex) {
     if (_on_shutdown) {
         _on_shutdown(ex);
     }
+    // EdgeFlowAI(2026-11-27, 결함 1017): 소켓을 닫기 전에 DTLS close_notify 를 보낸다 — 브라우저 RTCDtlsTransport 가 바로 「closed」가 된다.
+    // 이게 없으면 브라우저는 ICE 응답이 끊긴 것으로만 알아(동의 확인 실패) 몇 초~수십 초 뒤에야 disconnected/failed 를 본다.
+    // 이후 이 전송은 등록 해제·소멸되어 ICE 확인 요청에도 응답하지 않는다.
+    if (_dtls_transport) {
+        _dtls_transport->Close();
+    }
     if (_ice_agent) {
         for (auto &pair : _ice_agent->getPairs()) {
             if (pair->_socket) {
