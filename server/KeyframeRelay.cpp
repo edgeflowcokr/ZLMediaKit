@@ -71,28 +71,11 @@ public:
         _muxer->addTrack(video->clone());
         _muxer->addTrackCompleted();
         weak_ptr<KeyframeRelay> weak_self = shared_from_this();
-        _video = video;
-        _delegate = video->addDelegate([weak_self](const Frame::Ptr &frame) {
-            auto self = weak_self.lock();
-            if (!self || !self->_muxer) {
-                return false;
-            }
-            if (!frame->keyFrame() && !frame->configFrame()) {
-                return true; // P·B 프레임은 버린다.
-            }
-            if (self->_have_injected && frame->dts() <= self->_injected_dts) {
-                return true; // 시작 때 되돌려 넣은 키프레임과 같은(또는 이전) 프레임은 다시 넣지 않는다.
-            }
-            ++self->_keyframes;
-            auto ret = self->_muxer->inputFrame(frame);
-            if (frame->keyFrame()) {
-                self->scheduleFlush();
-            }
-            return ret;
-        });
-        // 원본 프레임 링(GOP 캐시)에 있는 마지막 설정+키프레임을 지금 넣는다 — 안 그러면 갈래가 원본의 다음 키프레임(1 GOP)과
-        // 그 다음 프레임(RTP 인코더가 한 접근 단위를 쥐고 있음)이 올 때까지 등록되지 않는다.
-        injectLastKeyframe(origin);
+        // 원본 먹서의 프레임 링 독자로 붙는다(상시). 이 링은 modify_stamp 보정 「후」 프레임이 흘러서, ~key(보정 Off)가 원본 RTSP 와
+        // 같은 RTP 타임스탬프(보정 pts x 90)를 낸다. 예전 위임(video->addDelegate)은 보정 「전」 원시 프레임이라 어긋났다.
+        if (!attachOriginReader(origin)) {
+            return false;
+        }
         // 원본 RTSP 링에 시청자로 붙는다 — 녹화기·짝 서버 중계처럼 「무시청이면 닫는」 원본이 키프레임 갈래만 볼 때 닫히지 않게.
         if (auto rtsp = dynamic_pointer_cast<RtspMediaSource>(origin)) {
             _origin_reader = rtsp->getRing()->attach(_poller, false);
@@ -125,26 +108,65 @@ public:
         });
     }
 
-    // 원본 먹서의 프레임 링(GOP 캐시)에서 마지막 설정 프레임들+키프레임을 꺼내 ~key 먹서에 넣는다. 원본 poller 에서 호출.
-    void injectLastKeyframe(const MediaSource::Ptr &origin) {
-        vector<Frame::Ptr> kept; // 설정·키프레임만(시간순)
+    // 원본 먹서의 프레임 링 독자를 붙인다. 원본 poller 에서 호출. 링의 GOP 캐시는 setReadCB 안에서 동기로 재생되므로,
+    // 그동안은 모아 두었다가 마지막 설정+키프레임 묶음만 ~key 먹서에 넣는다(안 그러면 원본의 다음 키프레임 1 GOP 을 기다린다).
+    // 그 뒤 독자 콜백은 키·설정 프레임만 넣는다. 캐시 재생과 이후 프레임은 겹치지 않으므로 dts 중복 제거는 하지 않는다.
+    bool attachOriginReader(const MediaSource::Ptr &origin) {
         try {
             auto muxer = origin->getMuxer();
-            auto reader = muxer ? muxer->getFrameReader() : nullptr;
-            if (!reader) {
-                return;
+            _frame_reader = muxer ? muxer->getFrameReader() : nullptr;
+        } catch (std::exception &ex) {
+            WarnL << "키프레임 갈래: 원본 프레임 링을 열지 못했습니다: " << _tuple.shortUrl() << " " << ex.what();
+            _frame_reader = nullptr;
+        }
+        if (!_frame_reader) {
+            WarnL << "키프레임 갈래: 원본 프레임 링 독자를 만들 수 없습니다: " << _tuple.shortUrl();
+            return false;
+        }
+        weak_ptr<KeyframeRelay> weak_self = shared_from_this();
+        _replaying = true;
+        _frame_reader->setDetachCB([weak_self]() {
+            // 원본 링이 사라질 때(원본 닫힘·재등록) — 갈래도 닫아 시청자가 새 원본으로 다시 만들게 한다.
+            if (auto self = weak_self.lock()) {
+                self->_poller->async([weak_self]() {
+                    if (auto s = weak_self.lock()) {
+                        InfoL << "키프레임 갈래: 원본 프레임 링이 분리되어 닫습니다: " << s->_tuple.shortUrl();
+                        s->stop();
+                    }
+                }, false);
             }
-            reader->setReadCB([&kept](const Frame::Ptr &frame) {
-                if (frame->getTrackType() == TrackVideo && (frame->keyFrame() || frame->configFrame())) {
-                    kept.emplace_back(frame);
+        });
+        try {
+            _frame_reader->setReadCB([weak_self](const Frame::Ptr &frame) {
+                auto self = weak_self.lock();
+                if (!self || !self->_muxer) {
+                    return;
+                }
+                if (frame->getTrackType() != TrackVideo || (!frame->keyFrame() && !frame->configFrame())) {
+                    return; // 오디오·P·B 프레임은 버린다.
+                }
+                if (self->_replaying) {
+                    self->_kept.emplace_back(frame);
+                    return;
+                }
+                ++self->_keyframes;
+                self->_muxer->inputFrame(frame);
+                if (frame->keyFrame()) {
+                    self->scheduleFlush();
                 }
             });
-            reader->setReadCB(nullptr); // 캐시 재생은 위 setReadCB 에서 동기로 끝났다. 시청자로 남지 않는다.
         } catch (std::exception &ex) {
-            DebugL << "키프레임 갈래: 원본 GOP 캐시를 읽지 못했습니다(다음 키프레임을 기다립니다): " << ex.what();
-            return;
+            WarnL << "키프레임 갈래: 원본 GOP 캐시 재생 중 예외(다음 키프레임을 기다립니다): " << _tuple.shortUrl() << " " << ex.what();
         }
-        // 뒤에서부터: 마지막 키프레임(같은 dts 의 조각 포함) + 그 앞에 붙은 설정 프레임.
+        _replaying = false;
+        auto kept = std::move(_kept);
+        _kept.clear();
+        injectKept(kept);
+        return true;
+    }
+
+    // 모아 둔 설정·키프레임 중 마지막 키프레임(같은 dts 의 조각 포함)+그 앞에 붙은 설정 프레임을 넣는다.
+    void injectKept(const vector<Frame::Ptr> &kept) {
         ssize_t last = static_cast<ssize_t>(kept.size()) - 1;
         while (last >= 0 && !kept[last]->keyFrame()) {
             --last;
@@ -169,8 +191,6 @@ public:
                 ++n;
             }
         }
-        _have_injected = true;
-        _injected_dts = key_dts;
         _keyframes += n;
         scheduleFlush();
         InfoL << "키프레임 갈래: 원본 GOP 캐시의 마지막 키프레임을 즉시 넣었습니다: " << _tuple.shortUrl() << " 프레임=" << n;
@@ -223,14 +243,13 @@ private:
     weak_ptr<MediaSource> _origin;
     EventPoller::Ptr _poller;
     MultiMediaSourceMuxer::Ptr _muxer;
-    Track::Ptr _video;
-    FrameWriterInterface *_delegate = nullptr;
+    MultiMediaSourceMuxer::RingType::RingReader::Ptr _frame_reader; // 원본 먹서 프레임 링 독자(보정 후 프레임)
+    vector<Frame::Ptr> _kept;      // GOP 캐시 재생 중 모아 둔 설정·키프레임
+    bool _replaying = false;       // setReadCB 의 동기 캐시 재생 중인가
     RtspMediaSource::RingType::RingReader::Ptr _origin_reader; // 원본 시청자 1 유지(내용은 쓰지 않는다)
     Timer::Ptr _timer;
     Ticker _idle;
     uint64_t _keyframes = 0;
-    bool _have_injected = false;   // 시작 때 원본 GOP 캐시의 키프레임을 넣었는가
-    uint64_t _injected_dts = 0;    // 그 키프레임의 dts(같거나 이전 프레임은 다시 넣지 않는다)
     bool _flush_pending = false;
 };
 
@@ -238,11 +257,11 @@ mutex g_mtx;
 unordered_map<string, KeyframeRelay::Ptr> g_relays; // vhost/app/stream → 갈래(만드는 중 포함)
 
 void KeyframeRelay::stop() {
-    if (_video && _delegate) {
-        _video->delDelegate(_delegate);
+    if (_frame_reader) {
+        _frame_reader->setReadCB(nullptr);
+        _frame_reader->setDetachCB(nullptr);
     }
-    _delegate = nullptr;
-    _video = nullptr;
+    _frame_reader = nullptr;
     _origin_reader = nullptr;
     _muxer = nullptr; // 등록 해제
     _timer = nullptr;
