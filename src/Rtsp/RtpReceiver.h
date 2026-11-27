@@ -256,12 +256,24 @@ public:
     RtpPacket::Ptr inputRtp(TrackType type, int sample_rate, uint8_t *ptr, size_t len);
     void setNtpStamp(uint32_t rtp_stamp, uint64_t ntp_stamp_ms, bool continuous = false);
     void setPayloadType(uint8_t pt);
+    // 「RTP 시간표 직접」: ntp_stamp 를 SR/NTP 가 아니라 펼친(64비트) RTP 시각으로 정한다(rtp_direct_stamp 프록시 옵션).
+    void setDirectStamp(bool enable) { _direct_stamp = enable; resetDirectStamp(); }
+    bool directStamp() const { return _direct_stamp; }
 
 protected:
     virtual void onRtpSorted(RtpPacket::Ptr rtp) {}
     virtual void onBeforeRtpSorted(const RtpPacket::Ptr &rtp) {}
 
 private:
+    // 부호 있는 32비트 차로 펼친 RTP 시각. 순서 뒤바뀜·B프레임 역행은 랩으로 보지 않고, 기준은 지금까지 본 최댓값에 둔다.
+    uint64_t unwrapDirectStamp(uint32_t rtp_stamp);
+    void resetDirectStamp() { _direct_started = false; _direct_ref32 = 0; _direct_ref64 = 0; }
+
+private:
+    bool _direct_stamp = false;
+    bool _direct_started = false;
+    uint32_t _direct_ref32 = 0;
+    int64_t _direct_ref64 = 0;
     bool _disable_ntp = false;
     uint8_t _pt = 0xFF;
     uint32_t _ssrc = 0;
@@ -349,6 +361,13 @@ public:
     void setPayloadType(int index, uint8_t pt){
         assert(index < kCount && index >= 0);
         _track[index].setPayloadType(pt);
+    }
+
+    // 모든 track 에 「RTP 시간표 직접」을 켜거나 끈다(펼침 기준도 새로 잡는다).
+    void setDirectStamp(bool enable) {
+        for (auto &track : _track) {
+            track.setDirectStamp(enable);
+        }
     }
 
     void clear() {

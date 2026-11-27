@@ -100,6 +100,10 @@ void RtspPlayer::play(const string &strUrl) {
     _beat_type = (*this)[Client::kRtspBeatType].as<int>();
     _beat_interval_ms = (*this)[Client::kBeatIntervalMS].as<int>();
     _speed = (*this)[Client::kRtspSpeed].as<float>();
+    {
+        auto &direct = (*this)[Client::kRtpDirectStamp];
+        RtpReceiver::setDirectStamp(!direct.empty() && direct.as<int>() != 0);
+    }
     DebugL << url._url << " " << (url._user.size() ? url._user : "null") << " " << (url._passwd.size() ? url._passwd : "null") << " " << _rtp_type;
 
     weak_ptr<RtspPlayer> weak_self = static_pointer_cast<RtspPlayer>(shared_from_this());

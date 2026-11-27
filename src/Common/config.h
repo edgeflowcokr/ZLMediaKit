@@ -634,6 +634,9 @@ extern const std::string kRtpType;
 // 设置方法:player[PlayerBase::kRtspBeatType] = 0/1/2;  [AUTO-TRANSLATED:ccc0726b]
 // Set method: player[PlayerBase::kRtspBeatType] = 0/1/2;
 extern const std::string kRtspBeatType;
+// rtsp 플레이어가 받은 RTP 시간표를 그대로 쓴다(1) — modify_stamp=0 과 함께 쓰면 pts = 펼친 RTP ÷ 90(ms) 이고 SR/NTP 기준 교체는 무시한다.
+// 짝 서버 라이브 중계처럼 출처 RTP 와 이 서버 RTP 를 맞춰야 할 때만 쓴다. 설정 방법:player[Client::kRtpDirectStamp] = 1;
+extern const std::string kRtpDirectStamp;
 // rtsp认证用户名  [AUTO-TRANSLATED:5ab80e57]
 // RTSP authentication username
 extern const std::string kRtspUser;

@@ -433,6 +433,7 @@ namespace Client {
 const string kNetAdapter = "net_adapter";
 const string kRtpType = "rtp_type";
 const string kRtspBeatType = "rtsp_beat_type";
+const string kRtpDirectStamp = "rtp_direct_stamp";
 const string kRtspUser = "rtsp_user";
 const string kRtspPwd = "rtsp_pwd";
 const string kRtspPwdIsMD5 = "rtsp_pwd_md5";

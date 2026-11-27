@@ -879,6 +879,13 @@ void installWebApi() {
         getThreadsLoad(EventPollerPool::Instance(), API_ARGS_VALUE, invoker);
     });
 
+    // EdgeFlowAI 확장 기능 표시 — 백엔드가 이 미디어 판이 어떤 확장을 아는지 보고 쓴다(옛 판은 이 API 가 없어 호출이 실패한다).
+    //   rtpDirectStamp: addStreamProxy 의 rtp_direct_stamp=1 + modify_stamp=0 (RTP 시간표 직접, 짝 서버 라이브 중계용)
+    api_regist("/index/api/getEdgeflowFeatures", [](API_ARGS_MAP) {
+        CHECK_SECRET();
+        val["data"]["rtpDirectStamp"] = true;
+    });
+
     // 获取后台工作线程负载  [AUTO-TRANSLATED:6166e265]
     // Get background worker thread load
     // 测试url http://127.0.0.1/index/api/getWorkThreadsLoad  [AUTO-TRANSLATED:209a8bc1]

@@ -24,6 +24,7 @@ uint32_t RtpTrack::getSSRC() const {
 }
 
 void RtpTrack::clear() {
+    resetDirectStamp();
     _ntp_stamp.resetContinuousAnchor();
     _ssrc = 0;
     _ssrc_alive.resetTime();
@@ -85,6 +86,8 @@ RtpPacket::Ptr RtpTrack::inputRtp(TrackType type, int sample_rate, uint8_t *ptr,
             return nullptr;
         }
         InfoL << "rtp ssrc changed:" << _ssrc << " -> " << ssrc;
+        // 출처가 새로 시작해 RTP 기준이 바뀌었다 — 직접 모드의 펼침도 새 값에서 다시 시작한다.
+        resetDirectStamp();
         _ntp_stamp.resetContinuousAnchor();
         _ssrc = ssrc;
         _ssrc_alive.resetTime();
@@ -108,7 +111,11 @@ RtpPacket::Ptr RtpTrack::inputRtp(TrackType type, int sample_rate, uint8_t *ptr,
     // 拷贝rtp  [AUTO-TRANSLATED:3a2466c2]
     // Copy RTP
     memcpy(&data[4], ptr, len);
-    if (_disable_ntp) {
+    if (_direct_stamp) {
+        // RTP 시간표 직접: SR·NTP 를 쓰지 않고 펼친 RTP 를 ms 로 바꾼다(90kHz 면 ÷90).
+        // 이 서버 인코더가 pts×90 으로 RTP 를 다시 만들 때 출처 RTP 의 하위 32비트가 그대로 나오게 하려는 것이다.
+        rtp->ntp_stamp = unwrapDirectStamp(rtp->getStamp()) * uint64_t(1000) / sample_rate;
+    } else if (_disable_ntp) {
         // 不支持ntp时间戳，例如国标推流，那么直接使用rtp时间戳  [AUTO-TRANSLATED:20085979]
         // Does not support NTP timestamp, such as national standard streaming, so directly use RTP timestamp
         rtp->ntp_stamp = rtp->getStamp() * uint64_t(1000) / sample_rate;
@@ -122,7 +129,31 @@ RtpPacket::Ptr RtpTrack::inputRtp(TrackType type, int sample_rate, uint8_t *ptr,
     return rtp;
 }
 
+uint64_t RtpTrack::unwrapDirectStamp(uint32_t rtp_stamp) {
+    if (!_direct_started) {
+        // 첫 패킷의 RTP 값을 그대로 기준으로 삼는다(랩 횟수 0).
+        _direct_started = true;
+        _direct_ref32 = rtp_stamp;
+        _direct_ref64 = rtp_stamp;
+        return rtp_stamp;
+    }
+    auto ext = _direct_ref64 + static_cast<int32_t>(rtp_stamp - _direct_ref32);
+    if (ext < 0) {
+        // 첫 값 근처에서 뒤로 간 패킷(B프레임 등) — 0 아래로 내려가지 않게 한다.
+        ext = 0;
+    }
+    if (ext > _direct_ref64) {
+        _direct_ref64 = ext;
+        _direct_ref32 = rtp_stamp;
+    }
+    return static_cast<uint64_t>(ext);
+}
+
 void RtpTrack::setNtpStamp(uint32_t rtp_stamp, uint64_t ntp_stamp_ms, bool continuous) {
+    if (_direct_stamp) {
+        // 직접 모드는 SR 이 기준을 바꾸지 못한다.
+        return;
+    }
     _disable_ntp = rtp_stamp == 0 && ntp_stamp_ms == 0;
     if (!_disable_ntp) {
         if (continuous) _ntp_stamp.setNtpStampContinuous(rtp_stamp, ntp_stamp_ms);
