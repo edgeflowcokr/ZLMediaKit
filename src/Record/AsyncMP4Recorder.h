@@ -40,6 +40,8 @@ public:
         return first && nowMs() - first <= _worker.limits().stall_tolerance_ms;
     }
     bool canReplace() const { return _worker.canReplace(); }
+    // 즉시 마감 요청(원자 표시만 세운다 — 작업자 큐를 거치지 않으므로 큐가 밀려도 막히지 않는다).
+    MP4Recorder::RotateResult requestRotate(uint32_t min_age_sec, uint32_t &age_sec) { return _recorder->requestRotate(min_age_sec, age_sec); }
     BoundedRecordWorker::Stats queueStats() const { return _worker.stats(); }
     bool inputFrame(const Frame::Ptr& frame) override {
         if (!_worker.healthy()) return _worker.submit([](){});

@@ -84,6 +84,7 @@ MP4Recorder::~MP4Recorder() {
 
 void MP4Recorder::createFile() {
     closeFile();
+    _rotate_requested.store(false); // 요청은 새 조각을 여는 것으로 소비된다(열기에 실패해도 다음 요청을 받는다)
     // 파일명·날짜 폴더·start_time 은 첫 프레임의 "수신" 벽시계로 정한다. 처리 시각(::time)을 쓰면 비동기 쓰기 큐가
     // SMR 정지로 밀린 만큼 세그먼트가 늦게 표시되고(백엔드 재생은 파일명 앞 19자=Start), 자정 근처엔 날짜 폴더도 틀린다.
     const time_t start = _ingest_wall ? _ingest_wall : ::time(NULL);
@@ -111,6 +112,7 @@ void MP4Recorder::createFile() {
             _muxer->addTrack(track);
         }
         _full_path_tmp = full_path_tmp;
+        _slice_start_wall.store(start);
     } catch (std::exception &ex) {
         WarnL << ex.what();
         _muxer = nullptr;
@@ -170,6 +172,18 @@ void MP4Recorder::closeFile() {
         asyncClose();
         _muxer = nullptr;
     }
+    _slice_start_wall.store(0);
+}
+
+MP4Recorder::RotateResult MP4Recorder::requestRotate(uint32_t min_age_sec, uint32_t &age_sec) {
+    age_sec = 0;
+    const time_t start = _slice_start_wall.load();
+    if (!start) return RotateResult::NoFile;
+    const time_t now = ::time(NULL);
+    age_sec = now > start ? (uint32_t)(now - start) : 0;
+    if (age_sec < min_age_sec) return RotateResult::TooYoung;
+    _rotate_requested.store(true);
+    return RotateResult::Requested;
 }
 
 void MP4Recorder::flush() {
@@ -192,7 +206,13 @@ bool MP4Recorder::inputFrame(const Frame::Ptr &frame) {
     // 눌러서, 키프레임만 기록(RecordThinner, 1~2초 간격) 중엔 상대 시각이 거의 늘지 않아 파일이 끝없이 커졌다(결함 805).
     const time_t wall_now = _ingest_wall ? _ingest_wall : ::time(NULL);
     const bool wall_due = _muxer && wall_now - _info.start_time >= (time_t)_max_second;
-    if (!_muxer || ((stamp_inc > int64_t(_max_second) * 1000 || wall_due) && (!_have_video || frame->keyFrame()))) {
+    // 즉시 마감 요청(rotateRecord): 길이가 안 찼어도 다음 키프레임에서 닫는다. 키프레임에서만 바뀌므로 프레임을 잃지 않는다.
+    const bool rotate_due = _muxer && _rotate_requested.load();
+    if (rotate_due && (!_have_video || frame->keyFrame())) {
+        InfoL << "[record-rotate] 요청에 따라 조각 마감: stream=" << _info.stream << " file=" << _info.file_name
+              << " age_sec=" << (wall_now - _info.start_time);
+    }
+    if (!_muxer || ((stamp_inc > int64_t(_max_second) * 1000 || wall_due || rotate_due) && (!_have_video || frame->keyFrame()))) {
         // 成立条件  [AUTO-TRANSLATED:8c9c6083]
         // Conditions for establishment
         // 1、_muxer为空  [AUTO-TRANSLATED:fa236097]

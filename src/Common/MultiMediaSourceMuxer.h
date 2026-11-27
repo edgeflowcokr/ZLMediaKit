@@ -173,6 +173,9 @@ public:
      * @return mp4 비동기 녹화기가 있으면 true 와 out 채움, 없으면 false.
      */
     bool getRecordQueueStats(BoundedRecordWorker::Stats &out);
+    // 연속 mp4 녹화의 현재 조각을 다음 키프레임에서 닫도록 요청한다(rotateRecord API). 소유 poller 스레드에서 부를 것.
+    // 반환: 0=요청함, 1=현재 조각이 min_age_sec 미만이라 무시, 2=열린 파일 없음, 3=연속 mp4 녹화기 없음. age_sec=현재 조각 나이.
+    int requestRotateRecord(uint32_t min_age_sec, uint32_t &age_sec);
 
     /**
      * 开始发送ps-rtp流

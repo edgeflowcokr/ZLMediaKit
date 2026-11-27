@@ -745,6 +745,20 @@ bool MultiMediaSourceMuxer::getRecordQueueStats(BoundedRecordWorker::Stats &out)
     return false;
 }
 
+int MultiMediaSourceMuxer::requestRotateRecord(uint32_t min_age_sec, uint32_t &age_sec) {
+    age_sec = 0;
+#if defined(ENABLE_MP4)
+    if (auto recorder = std::dynamic_pointer_cast<AsyncMP4Recorder>(_mp4)) {
+        switch (recorder->requestRotate(min_age_sec, age_sec)) {
+            case MP4Recorder::RotateResult::Requested: return 0;
+            case MP4Recorder::RotateResult::TooYoung: return 1;
+            default: return 2;
+        }
+    }
+#endif
+    return 3;
+}
+
 void MultiMediaSourceMuxer::startSendRtp(const MediaSourceEvent::SendRtpArgs &args, const std::function<void(uint16_t, const toolkit::SockException &)> cb) {
 #if defined(ENABLE_RTPPROXY)
     createGopCacheIfNeed();

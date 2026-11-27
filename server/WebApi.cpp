@@ -2092,6 +2092,38 @@ void installWebApi() {
         });
     });
 
+    // 연속 mp4 녹화의 현재 조각을 다음 키프레임에서 닫고 새 조각을 연다(백엔드가 최근 구간 재생 직전에 요청).
+    // 현재 조각이 min_age_sec(기본 10초) 미만이면 무시한다. 응답 result: requested | too_young | no_file | no_recorder.
+    // 실제 마감 완료는 on_record_mp4 훅으로 알려진다(이 API 는 요청만 접수).
+    api_regist("/index/api/rotateRecord",[](API_ARGS_MAP_ASYNC){
+        CHECK_SECRET();
+        CHECK_ARGS("app","stream");
+
+        auto vhost = allArgs["vhost"];
+        if (vhost.empty()) vhost = DEFAULT_VHOST;
+        auto src = MediaSource::find(vhost, allArgs["app"], allArgs["stream"]);
+        if (!src) {
+            throw ApiRetException("can not find the stream", API::NotFound);
+        }
+        uint32_t min_age = 10;
+        if (!allArgs["min_age_sec"].empty()) {
+            min_age = allArgs["min_age_sec"].as<uint32_t>();
+        }
+        src->getOwnerPoller()->async([=]() mutable {
+            uint32_t age = 0;
+            int r = 3;
+            if (auto muxer = src->getMuxer()) {
+                r = muxer->requestRotateRecord(min_age, age);
+            }
+            static const char *names[] = { "requested", "too_young", "no_file", "no_recorder" };
+            val["result"] = names[r];
+            val["rotated"] = (r == 0);
+            val["slice_age_sec"] = (Json::UInt) age;
+            val["min_age_sec"] = (Json::UInt) min_age;
+            invoker(200, headerOut, val.toStyledString());
+        });
+    });
+
     // 获取hls或MP4录制状态  [AUTO-TRANSLATED:a08a2f1a]
     // Get the recording status of hls or MP4
     api_regist("/index/api/isRecording",[](API_ARGS_MAP_ASYNC){

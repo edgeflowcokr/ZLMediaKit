@@ -78,6 +78,17 @@ public:
      */
     bool addTrack(const Track::Ptr & track) override;
 
+    // 「즉시 마감」 요청 결과(requestRotate).
+    enum class RotateResult { Requested, TooYoung, NoFile };
+
+    /**
+     * 현재 조각을 다음 키프레임에서 닫고 새 조각을 열도록 요청한다(백엔드가 최근 구간을 재생해야 할 때).
+     * 어느 스레드에서든 부를 수 있다(원자 표시만 세운다). 실제 교체는 녹화 작업자가 다음 키프레임에서 하므로 프레임을 잃지 않는다.
+     * 현재 조각 나이(수신 벽시계 기준 초)가 min_age_sec 미만이면 무시하고 TooYoung, 열린 파일이 없으면 NoFile.
+     * age_sec 에는 현재 조각 나이를 돌려준다(NoFile 이면 0).
+     */
+    RotateResult requestRotate(uint32_t min_age_sec, uint32_t &age_sec);
+
 private:
     void createFile();
     void closeFile();
@@ -89,6 +100,8 @@ private:
     size_t _max_second;
     time_t _ingest_wall = 0; // 현재 입력 프레임의 수신 벽시계(0=모름 → 처리 시각)
     time_t _last_ingest_wall = 0; // 현재 파일의 마지막 프레임 수신 벽시계(End 시각 제한용, 0=모름)
+    std::atomic<bool> _rotate_requested { false }; // 즉시 마감 요청 표시(다음 키프레임에서 조각 교체, createFile 이 내린다)
+    std::atomic<time_t> _slice_start_wall { 0 };   // 현재 조각 시작 수신 벽시계(0=열린 파일 없음) — requestRotate 의 나이 판정용
     DeltaStamp _delta_stamp[TrackMax];
     std::atomic<uint64_t> _file_index { 0 };
     std::string _full_path_tmp;
