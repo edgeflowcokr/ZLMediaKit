@@ -215,6 +215,11 @@ public:
     // 获取frame ring reader
     RingType::RingReader::Ptr getFrameReader();
 
+    // EdgeFlowAI: 이 스트림이 긴 pre-event 프리버퍼(gop_cache 개수만큼의 GOP)를 잡는지.
+    //   prefixes = [record]eventPreBufferStreams(쉼표 구분 스트림 이름 접두사, 앞뒤 공백 무시). 비면 모든 스트림(상위 동작).
+    //   "~key" 갈래는 이 값과 무관하게 늘 1 GOP 다(createGopCacheIfNeed).
+    static bool eventPreBufferWanted(const std::string &stream, const std::string &prefixes);
+
     // EdgeFlowAI: RTSP 출력의 대기 RTP 를 즉시 내보낸다(키프레임 갈래 ~key 전용 — 프레임이 드물게 오므로 한 프레임 지연이 곧 1 GOP 지연).
     void flushRtsp();
 

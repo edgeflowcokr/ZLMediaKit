@@ -338,6 +338,7 @@ const string kFastStart = RECORD_FIELD "fastStart";
 const string kFileRepeat = RECORD_FIELD "fileRepeat";
 const string kEnableFmp4 = RECORD_FIELD "enableFmp4";
 const string kEventPreBufferFrames = RECORD_FIELD "eventPreBufferFrames";
+const string kEventPreBufferStreams = RECORD_FIELD "eventPreBufferStreams";
 const string kQueueMaxMB = RECORD_FIELD "queueMaxMB";
 const string kStallToleranceMs = RECORD_FIELD "stallToleranceMs";
 const string kMaxWorkers = RECORD_FIELD "maxWorkers";
@@ -356,6 +357,8 @@ static onceToken token([]() {
     // 따라서 pre-event N초를 담으려면 이 값(프레임 상한)과 rtp_proxy.gop_cache(GOP 개수 상한)를 함께 키워야 한다.
     // 1080p30·2트랙·60초 ≈ 4400프레임 수준이라 8192 로 넉넉히 잡음.
     mINI::Instance()[kEventPreBufferFrames] = 8192;
+    // 긴 프리버퍼 링을 잡을 스트림 접두사(쉼표 구분). 비면 모든 스트림 — 상위 동작 그대로. 백엔드가 "main/" 으로 렌더한다.
+    mINI::Instance()[kEventPreBufferStreams] = "";
     // mp4 녹화 비동기 쓰기 큐(BoundedRecordWorker) 녹화기당 상주 바이트 예산(MiB, 페이로드+항목당 256B, 처리 중 포함).
     // SMR HDD 쓰기 정지 동안 프레임을 여기 쌓는다. 크기 규칙: 예산 >= 비트레이트 x 허용시간 x 1.2
     // (.5 실측 스트림 최대 6.8Mbps → 6.8/8 x 90 x 1.2 ≈ 92MB → 96). 최악 상주 메모리 = 전역 작업자 32 x 이 값.

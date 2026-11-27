@@ -525,6 +525,11 @@ extern const std::string kEnableFmp4;
 // startRecord(back_time_ms, forward_time_ms). Actual pre-roll duration = min(this frame cap,
 // rtp_proxy.gop_cache GOPs), so to buffer N seconds both this and gop_cache must be raised.
 extern const std::string kEventPreBufferFrames;
+// EdgeFlowAI: pre-event 프리버퍼(긴 링, rtp_proxy.gop_cache 개수만큼의 GOP)를 잡을 스트림 이름 접두사(쉼표 구분, 예 "main/").
+//   비면 모든 스트림(상위 동작 그대로). 목록에 없는 스트림은 링을 1 GOP(시청 시작·RTP 송출용)로만 둔다.
+//   이벤트 클립을 만들지 않는 보조 스트림이 gop_cache 초만큼 프레임을 쥐지 않게 한다(0.50 64채널 2026-11-27 — 보조 86개 약 1.2GB).
+// Comma-separated stream-name prefixes that get the long pre-event ring (gop_cache GOPs). Empty = every stream.
+extern const std::string kEventPreBufferStreams;
 // mp4 녹화 비동기 쓰기 큐의 녹화기당 바이트 예산(MiB, 기본 96, 범위 [4,256]).
 // Per-recorder byte budget (MiB) of the async MP4 write queue that absorbs storage stalls.
 extern const std::string kQueueMaxMB;

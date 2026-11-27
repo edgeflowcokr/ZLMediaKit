@@ -965,6 +965,22 @@ void MultiMediaSourceMuxer::onAllTrackReady() {
     InfoL << "stream: " << shortUrl() << " , codec info: " << getTrackInfoStr(this);
 }
 
+bool MultiMediaSourceMuxer::eventPreBufferWanted(const std::string &stream, const std::string &prefixes) {
+    bool any = false;
+    for (auto &item : split(prefixes, ",")) {
+        auto prefix = trim(item, " \t");
+        if (prefix.empty()) {
+            continue;
+        }
+        any = true;
+        if (start_with(stream, prefix)) {
+            return true;
+        }
+    }
+    // 접두사가 하나도 없으면(빈 값·쉼표·공백뿐) 모든 스트림이 대상이다(상위 동작 그대로).
+    return !any;
+}
+
 void MultiMediaSourceMuxer::createGopCacheIfNeed() {
     if (_ring) {
         return;
@@ -980,6 +996,16 @@ void MultiMediaSourceMuxer::createGopCacheIfNeed() {
         //   운영 gop_cache(60)·프리버퍼(8192 프레임)를 그대로 쓰면 채널마다 키프레임 60장(수십 MB)을 쥐고 있다.
         ring_max_size = std::min<size_t>(ring_max_size, 64);
         ring_max_gop = 1;
+    } else {
+        // EdgeFlowAI: 이벤트 클립(startRecord back_ms)을 만들지 않는 스트림(보조 스트림 등)은 긴 프리버퍼가 필요 없다.
+        //   이 링의 다른 쓰임(시청 시작 GOP·RTP 송출·KeyframeRelay 첫 키프레임)은 마지막 GOP 하나면 된다.
+        //   0.50 64채널(2026-11-27): 보조 86개가 gop_cache=60 으로 약 1.2GB 를 쥐었다. 연속 녹화(makeRecorder)는 이 링의 과거를 쓰지 않는다.
+        GET_CONFIG(string, pre_buffer_streams, Record::kEventPreBufferStreams);
+        if (ring_max_gop > 1 && !eventPreBufferWanted(_tuple.stream, pre_buffer_streams)) {
+            InfoL << "[event-prebuffer] stream=" << _tuple.shortUrl() << " gop_cache=" << ring_max_gop
+                  << " -> 1 (eventPreBufferStreams=" << pre_buffer_streams << " 에 없음)";
+            ring_max_gop = 1;
+        }
     }
     weak_ptr<MultiMediaSourceMuxer> weak_self = shared_from_this();
     auto src = std::make_shared<MediaSourceForMuxer>(weak_self.lock());
